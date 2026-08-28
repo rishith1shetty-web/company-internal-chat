@@ -1,14 +1,55 @@
 @import 'tailwindcss';
 
 /*
- * Application-wide base styles. The design system (colours, spacing, components) is Phase 2;
- * this file currently establishes only sensible document defaults.
+ * Application design tokens.
+ *
+ * One semantic palette, defined once, referenced everywhere as `bg-surface`, `text-ink-muted`,
+ * `border-line` and so on. Components carry no raw hex values, so the whole interface can be
+ * re-toned — including for a future company brand — by editing this block alone.
+ *
+ * Palette: corporate navy/slate neutrals with a single blue accent reserved for primary actions
+ * and the current user's own messages. Every pairing below meets WCAG AA contrast for body text
+ * on its intended background:
+ *
+ *   ink        #0f172a on surface  17.0:1     accent  #0369a1 on surface  5.9:1
+ *   ink-muted  #475569 on surface   7.4:1     surface #ffffff on accent   5.9:1
+ *   ink-subtle #64748b on surface   4.8:1     danger  #b91c1c on surface  6.2:1
+ *
+ * `ink-subtle` is the lightest text permitted, and only for secondary labels — nothing in the
+ * interface is lighter than 4.5:1.
  */
 
 @theme {
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     sans-serif;
+
+  /* Surfaces */
+  --color-canvas: #f1f5f9;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8fafc;
+
+  /* Lines */
+  --color-line: #e2e8f0;
+  --color-line-strong: #cbd5e1;
+
+  /* Text */
+  --color-ink: #0f172a;
+  --color-ink-muted: #475569;
+  --color-ink-subtle: #64748b;
+
+  /* Accent — primary actions and own messages only, never decoration */
+  --color-accent: #0369a1;
+  --color-accent-hover: #075985;
+  --color-accent-soft: #e0f2fe;
+  --color-accent-tint: #f0f9ff;
+
+  /* Status */
+  --color-danger: #b91c1c;
+  --color-danger-tint: #fef2f2;
+  --color-online: #059669;
+  --color-notice: #92400e;
+  --color-notice-tint: #fffbeb;
 }
 
 @layer base {
@@ -18,5 +59,23 @@
 
   body {
     font-family: var(--font-sans);
+    /* Body copy at 16px/1.5; the denser chat surfaces step down deliberately, never below 14px. */
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+
+  /*
+   * Respect the operating-system reduced-motion setting. The interface uses only short colour
+   * transitions, but a user who has asked for stillness gets stillness.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }

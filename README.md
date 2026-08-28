@@ -3,9 +3,11 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 1 complete — development environment and project foundation.**
-The application currently serves a placeholder page. No chat, identity, file transfer, database
-or network-restriction functionality exists yet; those are Phases 2–8.
+**Current status: Phase 2 complete — the chat interface.**
+The application serves the full interface: conversation list, one-to-one and group conversations,
+message history, composer, details panel and the "Switch user" control. It runs on local sample
+data only — there is no database, no real-time delivery, no session and no file transfer yet, and
+nothing typed into it is stored. Those are Phases 3–8.
 
 ## Scope of version 1
 
@@ -31,11 +33,13 @@ authentication. AI features are deferred to Phase 11 and must not appear before 
 | [docs/05-open-questions.md](docs/05-open-questions.md) | **Finalized decisions (D-01…D-12)**, remaining open questions, assumptions, technology stack |
 | [docs/06-phase-1-prerequisites.md](docs/06-phase-1-prerequisites.md) | What had to be settled before Phase 1 |
 | [docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) | **Development environment: toolchain, custom server, commands, verification** |
+| [docs/08-phase-2-ui.md](docs/08-phase-2-ui.md) | **Chat interface: screens, components, design tokens, accessibility, how later phases replace the sample data** |
 
 ## Stack
 
-**Installed (Phase 1):** Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · ESLint 9 ·
-tsx · Node.js 24, served by a custom `server.ts`.
+**Installed (Phases 1–2):** Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · ESLint 9 ·
+tsx · Node.js 24, served by a custom `server.ts`. Phase 2 added no dependency: the interface,
+its dialogs and its icons are written against React and Tailwind directly.
 
 **Planned:** Socket.IO (Phase 4) · Prisma + PostgreSQL 16 (Phase 3) · shadcn/ui as needed.
 Dependencies are added by the phase that needs them, never in advance — see
@@ -60,6 +64,10 @@ npm run dev
 ```
 
 Then open <http://localhost:3000>.
+
+Enter any display name to reach the interface. It opens on a sample workspace so the screens can
+be seen in use; **nothing is saved** — refreshing returns to the sample data. See
+[docs/08-phase-2-ui.md](docs/08-phase-2-ui.md).
 
 The application starts with **no `.env` file** — every Phase 1 setting has a safe default. To
 override defaults, copy the template and edit your copy:
@@ -105,4 +113,5 @@ memberships, file metadata and uploaded files persist in PostgreSQL independentl
 and are never deleted by expiry, browser close, refresh, restart, inactivity, or reconnection. See
 [docs/02-database.md](docs/02-database.md) §2.1.
 
-Phase 1 ran **no** database or Prisma command of any kind, and no database package is installed.
+Phases 1 and 2 ran **no** database or Prisma command of any kind, and no database package is
+installed.

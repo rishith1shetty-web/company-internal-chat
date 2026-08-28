@@ -32,6 +32,11 @@ logs
 # TypeScript incremental build info
 *.tsbuildinfo
 
+# Locally installed Claude Code tooling (skills, agents, local settings).
+# Kept on the developer's machine, never tracked: it is tooling, not application source,
+# and it is not needed to build, run or deploy the application.
+/.claude
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db
