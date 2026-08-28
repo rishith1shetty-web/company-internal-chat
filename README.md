@@ -3,13 +3,12 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 3 complete — the database layer.**
-The application serves the full Phase 2 interface: conversation list, one-to-one and group
-conversations, message history, composer, details panel and the "Switch user" control. The
-PostgreSQL schema is applied to `company_chat_db` and reachable through Prisma. The two are not
-connected yet by design: the interface still runs on local sample data and stores nothing.
-Wiring them together is Phases 4–5; real-time delivery, sessions and file transfer follow in
-Phases 4–8.
+**Current status: Phase 4 complete — real-time messaging infrastructure.**
+The application serves the full Phase 2 interface, backed by a PostgreSQL schema and a Socket.IO
+gateway that authenticates every connection, authorizes conversation rooms from the database, and
+persists messages before delivering them. The interface itself is **not yet wired to it**: it
+still runs on local sample data and stores nothing. Connecting the two is Phase 5; group chat,
+file transfer and network restriction follow in Phases 6–8.
 
 ## Scope of version 1
 
@@ -37,15 +36,17 @@ authentication. AI features are deferred to Phase 11 and must not appear before 
 | [docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) | **Development environment: toolchain, custom server, commands, verification** |
 | [docs/08-phase-2-ui.md](docs/08-phase-2-ui.md) | **Chat interface: screens, components, design tokens, accessibility, how later phases replace the sample data** |
 | [docs/09-phase-3-database.md](docs/09-phase-3-database.md) | **Database layer: schema, constraints, migration strategy, role permissions, tests, manual setup steps** |
+| [docs/10-phase-4-realtime.md](docs/10-phase-4-realtime.md) | **Real-time layer: Socket.IO architecture, identity, event contract, rooms, message flow, presence, tests** |
 
 ## Stack
 
-**Installed (Phases 1–3):** Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · ESLint 9 ·
+**Installed (Phases 1–4):** Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · ESLint 9 ·
 tsx · Node.js 24, served by a custom `server.ts`; Prisma 7 with `@prisma/adapter-pg` for
-PostgreSQL 16, and Vitest for tests. Phase 2 added no dependency at all: the interface, its
-dialogs and its icons are written against React and Tailwind directly.
+PostgreSQL 16; Socket.IO 4 and Zod for the real-time layer; Vitest for tests. Phase 2 added no
+dependency at all: the interface, its dialogs and its icons are written against React and
+Tailwind directly.
 
-**Planned:** Socket.IO (Phase 4) · shadcn/ui as needed.
+**Planned:** shadcn/ui as needed.
 Dependencies are added by the phase that needs them, never in advance — see
 [docs/05-open-questions.md](docs/05-open-questions.md) Part A.
 
@@ -101,9 +102,10 @@ Copy-Item .env.example .env   # Windows PowerShell
 ### Architecture note
 
 The application runs behind a custom `server.ts` rather than `next start`. This is deliberate
-(decision D-09): Next.js and, from Phase 4, Socket.IO share one process, one port and one origin.
-Production therefore starts with `node dist/server.js`. Details in
-[docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) §3.
+(decision D-09): Next.js and Socket.IO share one process, one port and one origin, so the session
+cookie applies to both transports with no CORS handling. Production therefore starts with
+`node dist/server.js`. Details in [docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) §3 and
+[docs/10-phase-4-realtime.md](docs/10-phase-4-realtime.md) §1.
 
 ## Database setup
 

@@ -20,8 +20,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import next from 'next';
 
 import { loadConfig, ConfigError } from './lib/config/env';
-import { disconnectDb } from './lib/db/prisma';
+import { disconnectDb, getDb } from './lib/db/prisma';
 import { createLogger, describeError, type Logger } from './lib/logging/logger';
+import { SOCKET_PATH } from './lib/realtime/events';
+import { createRealtimeGateway, type RealtimeGateway } from './lib/realtime/gateway';
 
 /** Time to wait for in-flight requests to finish before forcing exit. */
 const SHUTDOWN_GRACE_MS = 10_000;
@@ -77,17 +79,32 @@ async function main(): Promise<void> {
   });
 
   // ---------------------------------------------------------------------------------------
-  // PHASE 4 ATTACH POINT — real-time gateway.
+  // Real-time gateway (Phase 4).
   //
-  // The Socket.IO server attaches to `server` here, so it shares this port and origin:
+  // Attached to the same `http.Server` as Next.js, which is the whole point of D-09: one
+  // process, one port, one origin, and the session cookie applies to both transports without
+  // CORS. The gateway authenticates every handshake from that cookie and verifies conversation
+  // membership against the database before joining any room (docs/01-architecture.md §6).
   //
-  //     const io = new Server(server, { path: '/socket.io' });
-  //     registerRealtimeGateway(io);   // lib/realtime/
-  //
-  // Per docs/01-architecture.md §6 and CLAUDE.md §10, that gateway must authenticate every
-  // handshake from the session cookie and verify conversation membership server-side before
-  // joining any room. Nothing is attached in Phase 1.
+  // It is created only when a database is configured. Without one there is no identity to
+  // resolve and no message to persist, so a socket server would have nothing to do — and the
+  // Phase 2 interface must keep working on a machine with no `.env`.
   // ---------------------------------------------------------------------------------------
+  let gateway: RealtimeGateway | undefined;
+
+  if (config.databaseTarget) {
+    gateway = createRealtimeGateway(server, {
+      db: getDb(),
+      logger,
+      identity: {
+        sessionTtlHours: config.sessionTtlHours,
+        deviceTtlDays: config.deviceTtlDays,
+      },
+    });
+    logger.info('Realtime gateway attached', { path: SOCKET_PATH });
+  } else {
+    logger.warn('Realtime gateway not attached: no database configured');
+  }
 
   server.on('error', (error: unknown) => {
     logger.error('HTTP server error', describeError(error));
@@ -108,13 +125,14 @@ async function main(): Promise<void> {
     database: config.databaseTarget ?? 'not configured',
   });
 
-  installShutdownHandlers(server, app, logger);
+  installShutdownHandlers(server, app, logger, gateway);
 }
 
 function installShutdownHandlers(
   server: ReturnType<typeof createServer>,
   app: ReturnType<typeof next>,
   logger: Logger,
+  gateway: RealtimeGateway | undefined,
 ): void {
   let shuttingDown = false;
 
@@ -130,26 +148,39 @@ function installShutdownHandlers(
     }, SHUTDOWN_GRACE_MS);
     forceExit.unref();
 
-    server.close((error?: Error) => {
-      if (error) {
-        logger.error('Error closing HTTP server', describeError(error));
-      }
-      void app
-        .close()
-        .catch((closeError: unknown) => {
-          logger.error('Error closing Next.js application', describeError(closeError));
+    // Close the sockets FIRST. An open WebSocket is a live connection, and `server.close()`
+    // waits for those to end — without this the process would sit until the grace timer fired
+    // on every shutdown.
+    const closeSockets = gateway
+      ? gateway.close().catch((error: unknown) => {
+          logger.error('Error closing the realtime gateway', describeError(error));
         })
-        // Release the database connection pool, if one was ever opened. `disconnectDb` is a
-        // no-op when no client was created, which is the normal case until Phase 5.
-        .then(() => disconnectDb())
-        .catch((dbError: unknown) => {
-          logger.error('Error closing database connections', describeError(dbError));
-        })
-        .finally(() => {
-          clearTimeout(forceExit);
-          process.exit(error ? 1 : 0);
-        });
-    });
+      : Promise.resolve();
+
+    void closeSockets.then(() => closeHttpServer());
+
+    function closeHttpServer(): void {
+      server.close((error?: Error) => {
+        if (error) {
+          logger.error('Error closing HTTP server', describeError(error));
+        }
+
+        void app
+          .close()
+          .catch((closeError: unknown) => {
+            logger.error('Error closing Next.js application', describeError(closeError));
+          })
+          // Release the database connection pool, if one was ever opened.
+          .then(() => disconnectDb())
+          .catch((dbError: unknown) => {
+            logger.error('Error closing database connections', describeError(dbError));
+          })
+          .finally(() => {
+            clearTimeout(forceExit);
+            process.exit(error ? 1 : 0);
+          });
+      });
+    }
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));

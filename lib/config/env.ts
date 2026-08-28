@@ -35,6 +35,10 @@ export interface AppConfig {
   /** Public origin the browser uses. Used later for Origin checks (docs/04-security.md, CSRF). */
   appUrl: string;
   logLevel: LogLevel;
+  /** Idle session lifetime in hours, renewed while the user is active (D-04). */
+  sessionTtlHours: number;
+  /** Device identity lifetime in days, renewed on use (D-13, Q-19). */
+  deviceTtlDays: number;
   /**
    * Redacted description of the configured database (`role@host:port/company_chat_db`), or
    * `undefined` when no database is configured. Safe to log — it contains no password, and the
@@ -51,6 +55,10 @@ const VALID_LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error']
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_BIND_HOST = '127.0.0.1';
+/** D-04: 24 hours of inactivity. */
+const DEFAULT_SESSION_TTL_HOURS = 24;
+/** Q-19: 90 days, renewed on use. */
+const DEFAULT_DEVICE_TTL_DAYS = 90;
 
 export class ConfigError extends Error {
   readonly problems: readonly string[];
@@ -82,6 +90,23 @@ function parsePort(raw: string | undefined, problems: string[]): number {
     return DEFAULT_PORT;
   }
   return port;
+}
+
+/** Positive integer with a sane ceiling, so a typo cannot create an effectively eternal session. */
+function parsePositiveInteger(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+  max: number,
+  problems: string[],
+): number {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    problems.push(`${name} must be an integer between 1 and ${max} (received "${raw}")`);
+    return fallback;
+  }
+  return value;
 }
 
 function parseEnum<T extends string>(
@@ -157,6 +182,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     problems,
   );
 
+  const sessionTtlHours = parsePositiveInteger(
+    'SESSION_TTL_HOURS',
+    readOptional(env, 'SESSION_TTL_HOURS'),
+    DEFAULT_SESSION_TTL_HOURS,
+    24 * 365,
+    problems,
+  );
+  const deviceTtlDays = parsePositiveInteger(
+    'DEVICE_ID_TTL_DAYS',
+    readOptional(env, 'DEVICE_ID_TTL_DAYS'),
+    DEFAULT_DEVICE_TTL_DAYS,
+    3650,
+    problems,
+  );
+
   const databaseTarget = parseDatabaseTarget(readOptional(env, 'DATABASE_URL'), problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
@@ -169,6 +209,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     bindHost,
     appUrl,
     logLevel,
+    sessionTtlHours,
+    deviceTtlDays,
     databaseTarget,
   };
 }
@@ -177,8 +219,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
  * Deferred configuration — documented in .env.example, added here by the phase that needs it:
  *
  *   Phase 4  (none)                    the realtime layer reuses PORT / APP_URL
- *   Phase 5  SESSION_TTL_HOURS         idle session lifetime, default 24        (D-04)
- *            DEVICE_ID_TTL_DAYS        device identity lifetime, default 90     (D-13)
  *   Phase 7  UPLOAD_DIR                file storage root, outside the web root
  *            MAX_FILE_SIZE             upload ceiling in bytes, default 500 MB  (D-05)
  *            ALLOWED_FILE_EXTENSIONS   upload allowlist
