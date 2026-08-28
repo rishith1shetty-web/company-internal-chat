@@ -1,0 +1,44 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# Next.js build output
+/.next
+/out
+
+# Custom server build output (tsc -p tsconfig.server.json)
+/dist
+
+# Environment files — NEVER commit real configuration or credentials.
+# Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+
+# Uploaded files (company data — never enters version control, CLAUDE.md §15)
+/uploads
+/var
+/storage
+
+# Logs
+*.log
+npm-debug.log*
+logs
+
+# Test / coverage output
+/coverage
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# Local tooling caches
+.turbo
+.eslintcache

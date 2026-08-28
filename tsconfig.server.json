@@ -1,0 +1,22 @@
+{
+  // Build config for the custom server (D-09). The Next.js application is compiled by
+  // `next build`; this config compiles only server.ts and the server-side lib/ modules it
+  // imports, emitting CommonJS to dist/ so production runs `node dist/server.js`.
+  //
+  // module/moduleResolution are node16 rather than the legacy "node": TypeScript 6 deprecates
+  // node10 resolution. package.json declares no "type" field, so node16 both resolves and
+  // emits CommonJS, which is what `node dist/server.js` expects.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "isolatedModules": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["server.ts", "lib/**/*.ts"],
+  "exclude": ["node_modules", "dist", ".next", "app", "components"]
+}

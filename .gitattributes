@@ -1,0 +1,19 @@
+# Normalise line endings in the repository to LF.
+# Development is on Windows; the production company server is expected to be Linux
+# (docs/03-network.md). Storing LF avoids CRLF artefacts in shell scripts and config files
+# that would break there.
+* text=auto eol=lf
+
+# Binary files must never be normalised.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+
+# Generated; collapse in diffs and reviews.
+package-lock.json linguist-generated=true -diff
