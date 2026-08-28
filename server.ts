@@ -20,12 +20,25 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import next from 'next';
 
 import { loadConfig, ConfigError } from './lib/config/env';
+import { disconnectDb } from './lib/db/prisma';
 import { createLogger, describeError, type Logger } from './lib/logging/logger';
 
 /** Time to wait for in-flight requests to finish before forcing exit. */
 const SHUTDOWN_GRACE_MS = 10_000;
 
 async function main(): Promise<void> {
+  // Load `.env` before reading configuration.
+  //
+  // Next.js loads env files for the application itself, but it does so during `app.prepare()` —
+  // after this process has already read PORT, APP_URL and DATABASE_URL. Loading here means the
+  // custom server honours `.env` too, which it previously did not. Node's built-in loader is
+  // used rather than adding `dotenv` (CLAUDE.md §3); a missing file is normal and not an error.
+  try {
+    process.loadEnvFile('.env');
+  } catch {
+    // No .env on this machine: every setting has a safe default, and the database is optional.
+  }
+
   const config = loadConfig();
 
   const logger = createLogger({
@@ -90,6 +103,9 @@ async function main(): Promise<void> {
     appUrl: config.appUrl,
     nodeEnv: config.nodeEnv,
     mode: config.isDevelopment ? 'development' : 'production',
+    // Redacted: role, host, port and database name only, never the password (CLAUDE.md §14).
+    // No connection is opened here — the client connects lazily on first use.
+    database: config.databaseTarget ?? 'not configured',
   });
 
   installShutdownHandlers(server, app, logger);
@@ -122,6 +138,12 @@ function installShutdownHandlers(
         .close()
         .catch((closeError: unknown) => {
           logger.error('Error closing Next.js application', describeError(closeError));
+        })
+        // Release the database connection pool, if one was ever opened. `disconnectDb` is a
+        // no-op when no client was created, which is the normal case until Phase 5.
+        .then(() => disconnectDb())
+        .catch((dbError: unknown) => {
+          logger.error('Error closing database connections', describeError(dbError));
         })
         .finally(() => {
           clearTimeout(forceExit);

@@ -3,11 +3,13 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 2 complete — the chat interface.**
-The application serves the full interface: conversation list, one-to-one and group conversations,
-message history, composer, details panel and the "Switch user" control. It runs on local sample
-data only — there is no database, no real-time delivery, no session and no file transfer yet, and
-nothing typed into it is stored. Those are Phases 3–8.
+**Current status: Phase 3 complete — the database layer.**
+The application serves the full Phase 2 interface: conversation list, one-to-one and group
+conversations, message history, composer, details panel and the "Switch user" control. The
+PostgreSQL schema is applied to `company_chat_db` and reachable through Prisma. The two are not
+connected yet by design: the interface still runs on local sample data and stores nothing.
+Wiring them together is Phases 4–5; real-time delivery, sessions and file transfer follow in
+Phases 4–8.
 
 ## Scope of version 1
 
@@ -34,14 +36,16 @@ authentication. AI features are deferred to Phase 11 and must not appear before 
 | [docs/06-phase-1-prerequisites.md](docs/06-phase-1-prerequisites.md) | What had to be settled before Phase 1 |
 | [docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) | **Development environment: toolchain, custom server, commands, verification** |
 | [docs/08-phase-2-ui.md](docs/08-phase-2-ui.md) | **Chat interface: screens, components, design tokens, accessibility, how later phases replace the sample data** |
+| [docs/09-phase-3-database.md](docs/09-phase-3-database.md) | **Database layer: schema, constraints, migration strategy, role permissions, tests, manual setup steps** |
 
 ## Stack
 
-**Installed (Phases 1–2):** Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · ESLint 9 ·
-tsx · Node.js 24, served by a custom `server.ts`. Phase 2 added no dependency: the interface,
-its dialogs and its icons are written against React and Tailwind directly.
+**Installed (Phases 1–3):** Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · ESLint 9 ·
+tsx · Node.js 24, served by a custom `server.ts`; Prisma 7 with `@prisma/adapter-pg` for
+PostgreSQL 16, and Vitest for tests. Phase 2 added no dependency at all: the interface, its
+dialogs and its icons are written against React and Tailwind directly.
 
-**Planned:** Socket.IO (Phase 4) · Prisma + PostgreSQL 16 (Phase 3) · shadcn/ui as needed.
+**Planned:** Socket.IO (Phase 4) · shadcn/ui as needed.
 Dependencies are added by the phase that needs them, never in advance — see
 [docs/05-open-questions.md](docs/05-open-questions.md) Part A.
 
@@ -49,7 +53,7 @@ Dependencies are added by the phase that needs them, never in advance — see
 
 - Node.js 20.9+ (developed on 24.18)
 - npm 11+
-- PostgreSQL 16 — **not needed until Phase 3**
+- PostgreSQL 16 — needed from Phase 3 onwards, but the application still starts without it
 
 The project path must not contain `&`, and preferably no spaces: npm's `node_modules/.bin`
 launcher shims break on such paths. See [docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) §1.
@@ -88,6 +92,11 @@ Copy-Item .env.example .env   # Windows PowerShell
 | `npm start` | Run the production server (`node dist/server.js`); build first |
 | `npm run typecheck` | TypeScript checks (app + server) |
 | `npm run lint` | ESLint |
+| `npm test` | Vitest (database tests skip when no `DATABASE_URL` is set) |
+| `npm run db:check` | **Read-only.** Print the redacted database target, confirm it is `company_chat_db`, report role privileges and which tables exist |
+| `npm run db:generate` | Regenerate the Prisma client (also runs on install and build) |
+| `npm run db:status` | Show which migrations have been applied |
+| `npm run db:migrate` | Apply pending migrations (`prisma migrate deploy`) — forward only |
 
 ### Architecture note
 
@@ -95,6 +104,37 @@ The application runs behind a custom `server.ts` rather than `next start`. This 
 (decision D-09): Next.js and, from Phase 4, Socket.IO share one process, one port and one origin.
 Production therefore starts with `node dist/server.js`. Details in
 [docs/07-phase-1-setup.md](docs/07-phase-1-setup.md) §3.
+
+## Database setup
+
+The schema is already applied on the development machine. On a **new machine or the company
+server**, two steps are required first, both performed by whoever administers PostgreSQL:
+
+**1. Create `.env`** (git-ignored — never commit it):
+
+```bash
+DATABASE_URL=postgresql://company_chat_app:<password>@localhost:5432/company_chat_db
+```
+
+Percent-encode reserved characters in the password (`@` → `%40`, `:` → `%3A`, `%` → `%25`).
+
+**2. Grant the schema privilege**, connected to `company_chat_db` as an administrator:
+
+```sql
+GRANT USAGE, CREATE ON SCHEMA public TO company_chat_app;
+```
+
+That is the minimum needed to create the tables; the role stays a non-superuser without
+`CREATEDB`. Then:
+
+```bash
+npm run db:check      # read-only: confirms the target is company_chat_db and reports privileges
+npm run db:migrate    # applies committed migrations, forward only
+```
+
+`npm run db:migrate` never resets or drops anything; `prisma migrate reset` and `db push
+--force-reset` are prohibited in this project. Details, including why `prisma migrate dev` is not
+used, are in [docs/09-phase-3-database.md](docs/09-phase-3-database.md) §6.
 
 ## Database safety
 

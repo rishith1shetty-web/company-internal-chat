@@ -1,0 +1,286 @@
+// =============================================================================================
+// Company Internal Chat — database schema
+// =============================================================================================
+//
+// This file implements the entity design in docs/02-database.md §2. That document is the source
+// of truth for every column, constraint, index and referential action below; where a decision
+// looks arbitrary, its reasoning is there and is summarised in a comment here.
+//
+// SAFETY (docs/02-database.md §0): this project touches exactly one database —
+// `company_chat_db`, which already exists — through a dedicated non-superuser role. The schema
+// is only ever migrated FORWARD. `prisma migrate reset`, `db push --force-reset`,
+// `DROP DATABASE`, `DROP SCHEMA` and every other destructive reset are prohibited outright.
+//
+// Conventions applied throughout:
+//   - uuid primary keys, generated application-side so an id exists before the write
+//   - every timestamp `timestamptz`, stored UTC, formatted for display in the browser (A-05)
+//   - containers cascade, authorship does not: deleting a conversation removes its messages,
+//     but deleting a user never removes the messages they wrote (docs/02-database.md §4)
+
+generator client {
+  provider = "prisma-client"
+  // Generated TypeScript, not committed: `prisma generate` reproduces it, and both
+  // `npm run build` and `postinstall` run that. The entry point is
+  // prisma/generated/client.ts, imported only by lib/db/prisma.ts.
+  output   = "./generated"
+  // CommonJS output. The custom server (D-09) is compiled by plain `tsc` to CommonJS, and the
+  // ESM default emits `import.meta.url`, which cannot be expressed in a CommonJS file — the
+  // compiled server then fails to start. Next.js consumes either format happily.
+  moduleFormat = "cjs"
+}
+
+// Prisma 7 takes the connection URL from prisma.config.ts for migration commands, and from the
+// driver adapter passed to PrismaClient at runtime (see lib/db/prisma.ts). No connection string,
+// host, port, user or password appears in this file or anywhere else in tracked source.
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------------------------
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum MemberRole {
+  OWNER
+  MEMBER
+}
+
+enum MessageType {
+  TEXT
+  FILE
+  SYSTEM
+}
+
+enum AttachmentStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+// ---------------------------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------------------------
+
+/// An application user. Entirely unrelated to the PostgreSQL role the application connects as.
+///
+/// D-02: display names are NOT unique. Two rows may hold the same name and are two different
+/// people. `normalizedName` therefore carries a PLAIN, NON-UNIQUE index and exists for directory
+/// search and ordering only — it is not an identifier, and no query anywhere may resolve a user
+/// by name. The only identifier is `id`.
+///
+/// Real authentication later adds `externalId varchar UNIQUE NULL` here and changes nothing else
+/// in the schema — that is why identity lives in its own entity rather than being denormalised
+/// onto messages.
+model User {
+  id             String   @id @default(uuid(4)) @db.Uuid
+  /// As entered, trimmed.
+  displayName    String   @db.VarChar(64)
+  /// Lower-cased, whitespace-collapsed. Search and sort only — never an identifier.
+  normalizedName String   @db.VarChar(64)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  lastSeenAt     DateTime @default(now()) @db.Timestamptz(3)
+  /// Lets a name be retired without deleting message history. Deleting a User is not an
+  /// operation the application offers; this is the retirement path.
+  isActive       Boolean  @default(true)
+
+  sessions             Session[]
+  devices              Device[]
+  memberships          ConversationMember[]
+  messages             Message[]
+  attachments          Attachment[]
+  createdConversations Conversation[]       @relation("ConversationCreatedBy")
+
+  @@index([normalizedName])
+  @@index([lastSeenAt])
+}
+
+/// One row per browser that entered a display name. Answers "is this browser currently active?".
+///
+/// Temporary authentication state that owns no application data (D-14): the foreign key runs
+/// Session → User and never the reverse, so expiring a session can delete exactly one row and
+/// nothing else. Only the SHA-256 hash of the cookie token is stored; the raw token never is.
+model Session {
+  id         String   @id @default(uuid(4)) @db.Uuid
+  userId     String   @db.Uuid
+  /// SHA-256 hex digest of the opaque session cookie token.
+  tokenHash  String   @unique @db.Char(64)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  /// Explicit expiry, enforced on every lookup and slid forward on activity (D-04, 24h idle).
+  expiresAt  DateTime @db.Timestamptz(3)
+  lastSeenAt DateTime @default(now()) @db.Timestamptz(3)
+  /// Diagnostics only. See Q-11 before adding a client IP here.
+  userAgent  String?  @db.VarChar(255)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// The long-lived browser identity that survives session expiry (D-13). Answers "which User does
+/// this browser belong to?".
+///
+/// Deliberately a separate table from Session rather than a longer-lived session: the two answer
+/// different questions, have different lifetimes, and are revoked by different user actions.
+///
+/// Resolution rule: a device resolves ONLY when `revokedAt IS NULL AND expiresAt > now()`.
+/// Checking the row's mere existence is the bug to avoid. This is a convenience mechanism, not
+/// authentication — it grants no privilege and relaxes no authorization check (R-16).
+model Device {
+  id         String    @id @default(uuid(4)) @db.Uuid
+  userId     String    @db.Uuid
+  /// SHA-256 hex digest of the opaque device cookie token.
+  tokenHash  String    @unique @db.Char(64)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  /// now + DEVICE_ID_TTL_DAYS (default 90), renewed on use.
+  expiresAt  DateTime  @db.Timestamptz(3)
+  lastSeenAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// Set server-side by "Switch User". A revoked device never resolves again, so a copied
+  /// cookie is useless — which is why the control cannot be a browser-side cookie deletion.
+  revokedAt  DateTime? @db.Timestamptz(3)
+  userAgent  String?   @db.VarChar(255)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------------------------
+
+model Conversation {
+  id            String           @id @default(uuid(4)) @db.Uuid
+  type          ConversationType
+  /// Groups only; null for direct conversations.
+  name          String?          @db.VarChar(120)
+  /// DIRECT only: the two member ids sorted and joined, e.g. "<uuid>:<uuid>".
+  ///
+  /// "At most one direct conversation per pair" cannot be expressed as a constraint over the
+  /// membership table, so it is materialised here with a unique index. The database enforces it
+  /// instead of application code racing itself into duplicate pair conversations.
+  directKey     String?          @unique @db.VarChar(73)
+  createdById   String?          @db.Uuid
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+  /// The one deliberate denormalisation: ordering the sidebar otherwise needs a correlated
+  /// max-per-conversation subquery on the largest table on every load. Written inside the same
+  /// transaction as the message insert, so it cannot drift (docs/02-database.md §5).
+  lastMessageAt DateTime?        @db.Timestamptz(3)
+
+  createdBy   User?                @relation("ConversationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  members     ConversationMember[]
+  messages    Message[]
+  attachments Attachment[]
+
+  @@index([lastMessageAt(sort: Desc)])
+}
+
+/// Membership of one user in one conversation.
+///
+/// Removal sets `leftAt` rather than deleting the row: it preserves who was present when, and
+/// keeps read state meaningful if the person is re-added. **Authorization checks must test
+/// `leftAt IS NULL`**, not merely that the row exists — the most likely place for an
+/// access-control bug in this schema.
+///
+/// `joinedAt` is a SECURITY COLUMN, not a timestamp (D-03). A member sees only messages with
+/// `createdAt >= joinedAt`, so this value bounds what history is readable — in message queries,
+/// in file downloads (via the attachment's message), and in list previews and unread counts
+/// alike. It is written by the server only, never accepted from a request, and is never editable
+/// through the API. Re-adding a removed member sets it to the new join time and clears `leftAt`.
+model ConversationMember {
+  id                String     @id @default(uuid(4)) @db.Uuid
+  conversationId    String     @db.Uuid
+  userId            String     @db.Uuid
+  /// Direct conversations: both members are MEMBER.
+  role              MemberRole @default(MEMBER)
+  joinedAt          DateTime   @default(now()) @db.Timestamptz(3)
+  /// Non-null means removed or left. The row is kept.
+  leftAt            DateTime?  @db.Timestamptz(3)
+  /// Drives the unread count. Deliberately a plain column rather than a foreign key: it is a
+  /// read marker, and a cascade or restriction from Message onto membership is not wanted.
+  lastReadMessageId String?    @db.Uuid
+  lastReadAt        DateTime?  @db.Timestamptz(3)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  /// Every authorization check uses this index, so it is not optional.
+  @@index([userId, conversationId])
+}
+
+// ---------------------------------------------------------------------------------------------
+// Messages & attachments
+// ---------------------------------------------------------------------------------------------
+
+model Message {
+  id             String      @id @default(uuid(4)) @db.Uuid
+  conversationId String      @db.Uuid
+  /// SET NULL on user delete — never cascade a person's messages away. The UI renders the
+  /// author as "Unknown user".
+  senderId       String?     @db.Uuid
+  type           MessageType
+  /// Required for TEXT, an optional caption for FILE, the rendered text for SYSTEM.
+  body           String?
+  /// Browser-generated idempotency key. Phase 4 uses it so that a send retried after a dropped
+  /// acknowledgement collides with the existing row instead of inserting a second message.
+  clientMessageId String     @db.Uuid
+  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  attachment   Attachment?
+
+  /// The duplicate-send guard. SYSTEM messages have a null `senderId`; PostgreSQL treats NULLs
+  /// as distinct in a unique index, so server-written messages never collide with each other.
+  @@unique([senderId, clientMessageId])
+  /// History pagination and the "latest message" read. Keyset pagination on (createdAt, id)
+  /// rather than OFFSET: correct under concurrent inserts, and it does not degrade as history
+  /// grows.
+  @@index([conversationId, createdAt(sort: Desc), id(sort: Desc)])
+}
+
+/// File metadata. Phase 3 creates the table only — no upload, download or storage exists until
+/// Phase 7, and no file bytes are ever stored in the database.
+///
+/// `conversationId` is not duplicated data: an attachment exists before its message does, so its
+/// conversation cannot be derived through `messageId` at the moment the upload is authorized.
+///
+/// Download authorization must not stop at `conversationId`. Under D-03 it must also load the
+/// linked message and confirm `Message.createdAt >= member.joinedAt`, or a newly added member
+/// could pull every file ever shared in the group by asking for the file instead of the message.
+model Attachment {
+  id               String           @id @default(uuid(4)) @db.Uuid
+  conversationId   String           @db.Uuid
+  /// Null between upload and message creation. Unique: one attachment per message in v1 (A-07).
+  messageId        String?          @unique @db.Uuid
+  uploaderId       String?          @db.Uuid
+  /// As supplied by the client. Sanitized at render and at download; never used as a path.
+  originalFilename String           @db.VarChar(255)
+  /// Server-generated relative path, e.g. "2026/08/<uuid>.bin". Never client-influenced.
+  storageKey       String           @unique @db.VarChar(255)
+  /// Measured server-side, never taken from the client. BigInt deliberately: MAX_FILE_SIZE is
+  /// 500 MB and configurable upward, so a 32-bit column would be an avoidable ceiling.
+  byteSize         BigInt
+  /// Detected server-side from the file's leading bytes, never taken from the client.
+  mimeType         String           @db.VarChar(127)
+  /// Validated against the configured allowlist.
+  extension        String           @db.VarChar(16)
+  checksumSha256   String?          @db.Char(64)
+  status           AttachmentStatus @default(PENDING)
+  createdAt        DateTime         @default(now()) @db.Timestamptz(3)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  uploader     User?        @relation(fields: [uploaderId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  /// The abandoned-upload sweep (Phase 7) reads this.
+  @@index([status, createdAt])
+}

@@ -10,6 +10,10 @@
 # Custom server build output (tsc -p tsconfig.server.json)
 /dist
 
+# Generated Prisma client. Reproduced by `prisma generate` (which `npm run build` and
+# `postinstall` both run), so it is a build artifact rather than source.
+/prisma/generated
+
 # Environment files — NEVER commit real configuration or credentials.
 # Only .env.example is tracked.
 .env
