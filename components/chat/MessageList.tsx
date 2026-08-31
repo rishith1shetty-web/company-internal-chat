@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 
 import { Avatar } from '@/components/ui/Avatar';
+import { Button } from '@/components/ui/Button';
 import { formatDayLabel, formatFullTimestamp, formatTime } from '@/lib/chat/format';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
@@ -15,6 +16,15 @@ interface MessageListProps {
   showSenderNames: boolean;
   /** Scrolls to the newest message when this changes. */
   conversationId: string;
+  /** A page of history is in flight. */
+  loading: boolean;
+  /** History has been read at least once, so "no messages" is a fact rather than a guess. */
+  loaded: boolean;
+  /** Older messages exist before the oldest one on screen. */
+  hasOlderMessages: boolean;
+  onLoadOlder: () => void;
+  /** Re-sends a message whose delivery failed, reusing its idempotency key. */
+  onRetry: (message: ChatMessage) => void;
 }
 
 /** Messages sent within this window by the same person are visually grouped. */
@@ -26,11 +36,16 @@ export function MessageList({
   usersById,
   showSenderNames,
   conversationId,
+  loading,
+  loaded,
+  hasOlderMessages,
+  onLoadOlder,
+  onRetry,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Follow the conversation: jump to the newest message when the conversation changes, and keep
-  // up as messages arrive. Phase 4 will add "load older" above this, which must not fight it.
+  // up as messages arrive. Paging backwards only adds rows above, so it does not fight this.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [conversationId, messages.length]);
@@ -38,8 +53,10 @@ export function MessageList({
   if (messages.length === 0) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
-        <p className="max-w-sm text-center text-sm text-ink-subtle">
-          No messages in this conversation yet. Write the first one below.
+        <p className="max-w-sm text-center text-sm text-ink-subtle" role="status">
+          {loading || !loaded
+            ? 'Loading messages…'
+            : 'No messages in this conversation yet. Write the first one below.'}
         </p>
       </div>
     );
@@ -49,6 +66,14 @@ export function MessageList({
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-6">
       {/* `mt-auto` keeps a short conversation resting on the composer rather than floating. */}
       <ol className="mx-auto mt-auto flex w-full max-w-3xl flex-col gap-1" aria-label="Messages">
+        {hasOlderMessages ? (
+          <li className="mb-2 flex justify-center">
+            <Button size="sm" onClick={onLoadOlder} disabled={loading}>
+              {loading ? 'Loading…' : 'Load earlier messages'}
+            </Button>
+          </li>
+        ) : null}
+
         {buildRows(messages).map(({ message, dayLabel, grouped }) => (
           <li key={message.id}>
             {dayLabel ? <DayDivider label={dayLabel} /> : null}
@@ -62,6 +87,7 @@ export function MessageList({
                 senderId={message.senderId}
                 showSenderName={showSenderNames}
                 grouped={grouped}
+                onRetry={() => onRetry(message)}
               />
             )}
           </li>
@@ -137,6 +163,7 @@ interface MessageBubbleProps {
   senderName: string;
   showSenderName: boolean;
   grouped: boolean;
+  onRetry: () => void;
 }
 
 /**
@@ -153,7 +180,11 @@ function MessageBubble({
   senderName,
   showSenderName,
   grouped,
+  onRetry,
 }: MessageBubbleProps) {
+  const sending = message.deliveryState === 'SENDING';
+  const failed = message.deliveryState === 'FAILED';
+
   return (
     <div
       className={cn(
@@ -181,6 +212,9 @@ function MessageBubble({
             isOwn
               ? 'rounded-br-sm bg-accent text-white'
               : 'rounded-bl-sm border border-line bg-surface text-ink',
+            // Not yet acknowledged by the server, and shown as such rather than as delivered.
+            sending && 'opacity-70',
+            failed && 'ring-2 ring-danger/60',
           )}
         >
           {message.body}
@@ -194,7 +228,26 @@ function MessageBubble({
           >
             {formatTime(message.createdAt)}
           </time>
+          {sending ? <span className="ml-1.5">Sending…</span> : null}
         </p>
+
+        {/*
+          A failed message is never dressed up as sent. Retrying reuses the same idempotency key,
+          so if the original write did commit and only the acknowledgement was lost, the server
+          returns that row instead of storing the message a second time.
+        */}
+        {failed ? (
+          <p className={cn('mt-0.5 text-[11px] text-danger', isOwn && 'text-right')} role="alert">
+            Not sent.{' '}
+            <button
+              type="button"
+              onClick={onRetry}
+              className="cursor-pointer font-medium underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+            >
+              Try again
+            </button>
+          </p>
+        ) : null}
       </div>
     </div>
   );

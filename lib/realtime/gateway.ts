@@ -31,6 +31,7 @@ import {
 import {
   findActiveMembership,
   listActiveMemberships,
+  listOtherActiveMemberIds,
   listPresencePeerIds,
 } from '../authz/membership';
 import type { Logger } from '../logging/logger';
@@ -263,6 +264,39 @@ export function createRealtimeGateway(
   function registerHandlers(socket: ChatSocket): void {
     const { userId } = socket.data;
 
+    /*
+     * Presence snapshot.
+     *
+     * `presence:update` covers changes, but a client that has just connected knows nothing about
+     * who was already online, and a client that has just started a new conversation knows nothing
+     * about its new peer. The peer set is read from the database on every call, so the answer is
+     * always scoped to the people this user actually shares a conversation with — the client
+     * cannot name anybody, and the payload is ignored entirely.
+     */
+    socket.on('presence:sync', (_payload, ack) => {
+      void (async () => {
+        try {
+          const peerIds = await listPresencePeerIds(db, userId);
+          const peers = await db.user.findMany({
+            where: { id: { in: peerIds } },
+            select: { id: true, lastSeenAt: true },
+          });
+
+          respond(ack, {
+            ok: true,
+            data: peers.map((peer) => ({
+              userId: peer.id,
+              online: presence.isOnline(peer.id),
+              lastSeenAt: peer.lastSeenAt.toISOString(),
+            })),
+          });
+        } catch (error) {
+          logger.error('presence:sync failed', { userId, ...describeError(error) });
+          respond(ack, { ok: false, error: toSocketError(error) });
+        }
+      })();
+    });
+
     socket.on('conversation:join', (payload, ack) => {
       void (async () => {
         const parsed = joinConversationSchema.safeParse(payload);
@@ -364,6 +398,24 @@ export function createRealtimeGateway(
             return;
           }
 
+          /*
+           * Make sure every active member's sockets are actually in the room before broadcasting.
+           *
+           * A socket joins its conversation rooms at connection time, so a conversation created
+           * *after* a member connected has no room membership for them and the broadcast below
+           * would reach nobody. Rather than have conversation creation reach into the socket
+           * server, the room is repaired here, from the database, at the only moment it matters.
+           *
+           * This grants nothing: the member ids come from `listOtherActiveMemberIds`, which is the
+           * same authorization source `conversation:join` uses. It adds people who are entitled to
+           * the room, never people who asked for it.
+           *
+           * It cannot throw. The acknowledgement has already gone out, so a failure here must not
+           * reach the catch below — that would log a stored message as failed and send a second
+           * acknowledgement for a send that actually succeeded.
+           */
+          await ensureMembersInRoom(wire.conversationId, userId);
+
           // Everyone in the room except the sender, whose acknowledgement already carried it.
           socket.to(rooms.conversation(wire.conversationId)).emit('message:new', wire);
         } catch (error) {
@@ -379,6 +431,31 @@ export function createRealtimeGateway(
         }
       })();
     });
+  }
+
+  /**
+   * Joins every active member's open sockets to a conversation's room.
+   *
+   * Called on the send path, where a conversation that did not exist when a member connected
+   * would otherwise deliver to an empty room. Membership is read from the database; the sender's
+   * own other tabs are included so every window of theirs stays in step.
+   */
+  async function ensureMembersInRoom(conversationId: string, senderId: string): Promise<void> {
+    try {
+      const peerIds = await listOtherActiveMemberIds(db, conversationId, senderId);
+      const room = rooms.conversation(conversationId);
+
+      for (const peerId of [...peerIds, senderId]) {
+        io.in(rooms.user(peerId)).socketsJoin(room);
+      }
+    } catch (error) {
+      // Best-effort: the message is already committed and acknowledged. Anyone already in the
+      // room still receives it; anyone who is not will see it on their next read.
+      logger.warn('Could not repair conversation room membership', {
+        conversationId,
+        ...describeError(error),
+      });
+    }
   }
 
   /**

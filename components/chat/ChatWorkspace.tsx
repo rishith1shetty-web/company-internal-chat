@@ -1,28 +1,35 @@
 'use client';
 
-import { useCallback, useMemo, useReducer, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ChatHeader } from '@/components/chat/ChatHeader';
+import { ConnectionNotice } from '@/components/chat/ConnectionNotice';
 import { DetailsPanel } from '@/components/chat/DetailsPanel';
 import { EmptyChatState } from '@/components/chat/EmptyChatState';
 import { MessageComposer } from '@/components/chat/MessageComposer';
 import { MessageList } from '@/components/chat/MessageList';
 import { NameEntryScreen } from '@/components/chat/NameEntryScreen';
-import { NewChatDialog, NewGroupDialog } from '@/components/chat/NewConversationDialogs';
+import { NewChatDialog } from '@/components/chat/NewConversationDialogs';
 import { Sidebar } from '@/components/chat/Sidebar';
-import { AttachmentDialog, SettingsDialog, SwitchUserDialog } from '@/components/chat/SystemDialogs';
+import {
+  AttachmentDialog,
+  GroupsUnavailableDialog,
+  SettingsDialog,
+  SwitchUserDialog,
+} from '@/components/chat/SystemDialogs';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { hasNameCollision } from '@/lib/chat/format';
 import {
-  chatReducer,
   conversationTitle,
-  initialChatState,
   selectConversationListEntries,
   selectDirectCounterpart,
+  selectDirectoryUsers,
+  selectHistoryState,
   selectMessages,
   selectSelectedConversation,
   selectUsersById,
 } from '@/lib/chat/state';
+import { useChatSession } from '@/lib/chat/useChatSession';
 import { cn } from '@/lib/ui/cn';
 import { useMediaQuery } from '@/lib/ui/useMediaQuery';
 
@@ -32,18 +39,20 @@ type DialogName = 'new-chat' | 'new-group' | 'attachment' | 'switch-user' | 'set
  * The application shell: header, conversation sidebar, chat panel and details panel, plus the
  * dialogs that act on them.
  *
- * This is the single client boundary for the chat interface and the only component that holds
- * state. Everything below it is presentational and receives data and callbacks, which is what
- * keeps Phase 4/5 from becoming a redesign: the reducer's actions become API calls and socket
- * emits, and the components stay as they are (docs/01-architecture.md §4, "Layer rules").
+ * This is the single client boundary for the chat interface. It holds no chat state of its own —
+ * `useChatSession` owns that, and everything below this component is presentational and receives
+ * data and callbacks (docs/01-architecture.md §4, "Layer rules").
  *
- * PHASE 2: no network, no session, no persistence. See lib/mock/chat-seed.ts.
+ * PHASE 5: conversations, messages, presence and identity are real and come from the server.
+ * Group creation is Phase 6 and file transfer is Phase 7; both controls are present and say so
+ * rather than doing something that only looks like it worked.
  */
 export function ChatWorkspace() {
-  const [state, dispatch] = useReducer(chatReducer, initialChatState);
+  const session = useChatSession();
+  const { state } = session;
+
   const [openDialog, setOpenDialog] = useState<DialogName | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [hasSwitchedUser, setHasSwitchedUser] = useState(false);
 
   /*
    * The details panel is open by default where there is room for it beside the conversation,
@@ -56,63 +65,60 @@ export function ChatWorkspace() {
 
   const usersById = useMemo(() => selectUsersById(state), [state]);
   const listEntries = useMemo(() => selectConversationListEntries(state), [state]);
+  const directoryUsers = useMemo(() => selectDirectoryUsers(state), [state]);
   const selectedConversation = selectSelectedConversation(state);
   const currentUser = state.currentUser;
 
   const closeDialog = useCallback(() => setOpenDialog(null), []);
 
-  const enter = (displayName: string) => {
-    dispatch({ type: 'enter', userId: createId('usr'), displayName, now: new Date().toISOString() });
+  /**
+   * Opening the picker re-reads the directory.
+   *
+   * The colleague list is loaded when the workspace opens; somebody who entered their name five
+   * minutes later would be missing from it, which looks identical to them not existing.
+   */
+  const openNewChat = () => {
+    session.refreshDirectory();
+    setOpenDialog('new-chat');
   };
 
-  const confirmSwitchUser = () => {
+  const confirmSwitchUser = async () => {
+    const switched = await session.switchUser();
+    if (!switched) return;
+
     closeDialog();
     setDetailsOverride(null);
     setSidebarOpen(false);
-    setHasSwitchedUser(true);
-    dispatch({ type: 'switch-user' });
   };
 
+  if (state.screen === 'loading') {
+    return (
+      <main className="flex min-h-dvh items-center justify-center bg-canvas px-4">
+        <p className="text-sm text-ink-muted" role="status">
+          Loading your conversations…
+        </p>
+      </main>
+    );
+  }
+
   if (state.screen === 'name-entry' || !currentUser) {
-    return <NameEntryScreen onEnter={enter} afterSwitchUser={hasSwitchedUser} />;
+    return (
+      <NameEntryScreen
+        onEnter={session.enter}
+        pending={session.entering}
+        error={state.notice}
+        afterSwitchUser={state.afterSwitchUser}
+      />
+    );
   }
 
   const selectConversation = (conversationId: string) => {
-    dispatch({ type: 'select-conversation', conversationId });
+    session.selectConversation(conversationId);
     setSidebarOpen(false);
   };
 
-  const sendMessage = (body: string) => {
-    if (!selectedConversation) return;
-    dispatch({
-      type: 'send-message',
-      conversationId: selectedConversation.id,
-      body,
-      messageId: createId('msg'),
-      // The idempotency key Phase 4 uses to reconcile an optimistic bubble with the stored row.
-      clientMessageId: createId('cmi'),
-      now: new Date().toISOString(),
-    });
-  };
-
   const startDirectConversation = (otherUserId: string) => {
-    dispatch({
-      type: 'start-direct-conversation',
-      otherUserId,
-      conversationId: createId('cnv'),
-      now: new Date().toISOString(),
-    });
-  };
-
-  const createGroup = (name: string, memberIds: string[]) => {
-    dispatch({
-      type: 'create-group',
-      conversationId: createId('cnv'),
-      name,
-      memberIds,
-      systemMessageId: createId('msg'),
-      now: new Date().toISOString(),
-    });
+    void session.startDirectConversation(otherUserId);
   };
 
   const selectedTitle = selectedConversation
@@ -121,7 +127,15 @@ export function ChatWorkspace() {
   const counterpart = selectedConversation
     ? selectDirectCounterpart(selectedConversation, currentUser.id, usersById)
     : null;
-  const otherUsers = state.directory.filter((user) => user.id !== currentUser.id);
+  const currentUserSummary = usersById.get(currentUser.id) ?? {
+    id: currentUser.id,
+    displayName: currentUser.displayName,
+    presence: 'ONLINE' as const,
+    lastSeenAt: null,
+  };
+  const history = selectedConversation
+    ? selectHistoryState(state, selectedConversation.id)
+    : null;
 
   return (
     <div className="flex h-dvh flex-col bg-canvas text-ink">
@@ -133,10 +147,17 @@ export function ChatWorkspace() {
       </a>
 
       <AppHeader
-        currentUser={currentUser}
+        currentUser={currentUserSummary}
         onToggleSidebar={() => setSidebarOpen((open) => !open)}
         onSwitchUser={() => setOpenDialog('switch-user')}
         onOpenSettings={() => setOpenDialog('settings')}
+      />
+
+      {/* Honest about the connection: a chat that is quietly offline is worse than one that says so. */}
+      <ConnectionNotice
+        connection={state.connection}
+        notice={state.notice}
+        onDismissNotice={session.dismissNotice}
       />
 
       <div className="relative flex min-h-0 flex-1">
@@ -161,9 +182,9 @@ export function ChatWorkspace() {
             entries={listEntries}
             selectedConversationId={state.selectedConversationId}
             searchTerm={state.searchTerm}
-            onSearchChange={(term) => dispatch({ type: 'set-search', term })}
+            onSearchChange={session.setSearchTerm}
             onSelectConversation={selectConversation}
-            onNewChat={() => setOpenDialog('new-chat')}
+            onNewChat={openNewChat}
             onNewGroup={() => setOpenDialog('new-group')}
             onClose={() => setSidebarOpen(false)}
           />
@@ -189,20 +210,25 @@ export function ChatWorkspace() {
                 usersById={usersById}
                 showSenderNames={selectedConversation.type === 'GROUP'}
                 conversationId={selectedConversation.id}
+                loading={history?.loading ?? false}
+                loaded={history?.loaded ?? false}
+                hasOlderMessages={history?.hasMore ?? false}
+                onLoadOlder={session.loadOlderMessages}
+                onRetry={session.retryMessage}
               />
 
               <MessageComposer
                 /* Remounting per conversation gives each one a fresh, empty composer. */
                 key={selectedConversation.id}
                 conversationTitle={selectedTitle}
-                onSend={sendMessage}
+                onSend={session.sendMessage}
                 onAttachFile={() => setOpenDialog('attachment')}
               />
             </>
           ) : (
             <EmptyChatState
               hasNoConversations={state.conversations.length === 0}
-              onNewChat={() => setOpenDialog('new-chat')}
+              onNewChat={openNewChat}
               onNewGroup={() => setOpenDialog('new-group')}
             />
           )}
@@ -235,42 +261,26 @@ export function ChatWorkspace() {
       {/* Each dialog is mounted only while it is open, so it always starts from a clean slate. */}
       {openDialog === 'new-chat' ? (
         <NewChatDialog
-          users={otherUsers}
+          users={directoryUsers}
           onClose={closeDialog}
           onStart={startDirectConversation}
+          onSearch={session.searchDirectory}
         />
       ) : null}
-      {openDialog === 'new-group' ? (
-        <NewGroupDialog users={otherUsers} onClose={closeDialog} onCreate={createGroup} />
-      ) : null}
+      <GroupsUnavailableDialog open={openDialog === 'new-group'} onClose={closeDialog} />
       <AttachmentDialog open={openDialog === 'attachment'} onClose={closeDialog} />
       <SwitchUserDialog
         open={openDialog === 'switch-user'}
-        currentUser={currentUser}
+        currentUser={currentUserSummary}
         onClose={closeDialog}
-        onConfirm={confirmSwitchUser}
+        onConfirm={() => void confirmSwitchUser()}
       />
       <SettingsDialog
         open={openDialog === 'settings'}
-        currentUser={currentUser}
+        currentUser={currentUserSummary}
         onClose={closeDialog}
         onSwitchUser={() => setOpenDialog('switch-user')}
       />
     </div>
   );
-}
-
-/**
- * Local identifier for a locally created object.
- *
- * Phase 2 only. Every real id is issued by the server, which never trusts an id supplied by a
- * browser (CLAUDE.md §9); the one exception by design is `clientMessageId`, the browser-minted
- * idempotency key described in docs/01-architecture.md §6.
- */
-function createId(prefix: string): string {
-  const random =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : Math.random().toString(16).slice(2);
-  return `${prefix}-${random.replace(/-/g, '').slice(0, 12)}`;
 }

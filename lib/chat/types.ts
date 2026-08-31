@@ -1,13 +1,14 @@
 /**
  * View-model types for the chat interface.
  *
- * These are the shapes the UI renders. They intentionally mirror the entities designed in
- * docs/02-database.md (User, Conversation, ConversationMember, Message, Attachment) so that
- * when Phase 3 introduces Prisma and Phase 4/5 introduce the real API, the server can return
- * these shapes and the components need no redesign.
+ * These are the shapes the UI renders. They mirror the entities in docs/02-database.md (User,
+ * Conversation, ConversationMember, Message, Attachment), and from Phase 5 they are built from
+ * the server's answers — see lib/chat/wire.ts for what actually crosses the network and
+ * lib/chat/state.ts for the mapping.
  *
- * What they are NOT: database models. There is no persistence, no Prisma, and no server
- * behind them in Phase 2 — see lib/mock/chat-seed.ts.
+ * What they are NOT: database models. They carry browser-only fields the server neither sends
+ * nor accepts (`presence`, `deliveryState`), and they never carry anything the server would not
+ * disclose.
  *
  * Identity rules encoded here (docs/01-architecture.md §5):
  *   - A user is identified by `id`, never by `displayName` (D-02).
@@ -27,15 +28,25 @@ export type MessageKind = 'TEXT' | 'FILE' | 'SYSTEM';
 export type MemberRole = 'OWNER' | 'MEMBER';
 
 /**
- * Local delivery state of a message the user just sent. Phase 4 replaces this with the real
- * optimistic-send/ack cycle (docs/01-architecture.md §6); nothing here implies persistence.
+ * Local delivery state of a message the user sent.
+ *
+ * `SENDING` is a bubble that exists only in this browser. It becomes `SENT` when the server
+ * acknowledges it — which happens after the row is committed, never before — and `FAILED` when
+ * the acknowledgement says no or never arrives. A failed message is never shown as sent: the
+ * user is told, and can retry with the same `clientMessageId`, so the retry collides with the
+ * stored row rather than inserting a second one (docs/01-architecture.md §6).
  */
-export type DeliveryState = 'SENDING' | 'SENT';
+export type DeliveryState = 'SENDING' | 'SENT' | 'FAILED';
 
 export interface UserSummary {
   /** Server-issued identity. The only thing ownership and access are ever keyed on. */
   id: string;
   displayName: string;
+  /**
+   * Derived in the browser from the socket's presence events, not from a REST field. Presence is
+   * scoped server-side to people the caller shares a conversation with, so a colleague who is
+   * only in the directory is shown as `OFFLINE` with their last-seen time.
+   */
   presence: PresenceState;
   /** ISO-8601 UTC, or null when never seen. */
   lastSeenAt: string | null;
@@ -70,6 +81,15 @@ export interface ChatMessage {
   attachment: AttachmentSummary | null;
 }
 
+/** The newest message of a conversation, as the sidebar preview needs it. */
+export interface MessagePreview {
+  id: string;
+  senderId: string | null;
+  kind: MessageKind;
+  body: string | null;
+  createdAt: string;
+}
+
 export interface Conversation {
   id: string;
   type: ConversationType;
@@ -78,6 +98,12 @@ export interface Conversation {
   createdAt: string;
   lastMessageAt: string | null;
   members: ConversationMember[];
+  /**
+   * Server-computed preview, inside this member's visible window (D-03). Present so the sidebar
+   * can show a conversation whose history has not been opened and therefore not loaded.
+   */
+  lastMessage: MessagePreview | null;
+  /** Server-computed: messages newer than this member's read marker that they did not send. */
   unreadCount: number;
 }
 

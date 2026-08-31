@@ -1,320 +1,600 @@
 /**
  * Chat UI state: one reducer plus pure selectors. No React, no data access, no `process.env`.
  *
- * Keeping the state transitions here rather than inside components means the interaction rules
- * are readable in one place and remain unit-testable when Vitest arrives, and it gives Phase 4/5
- * a single seam to replace: today an action mutates local state, later the same action dispatches
- * a request or a socket emit and the reducer applies the server's answer.
+ * Everything here is a projection of what the server said. The reducer applies answers — a
+ * conversation list, a page of history, an acknowledged message, a presence event — and computes
+ * nothing the server is responsible for. Where a value looks like it is being decided locally
+ * (an unread badge on `select-conversation`, a `lastMessage` after a send) it is an optimistic
+ * echo of a decision the server has already taken or is about to confirm, and the next server
+ * answer overwrites it.
  *
- * PHASE 2 SCOPE. Nothing here persists anything. Values that must not vary between renders —
- * ids and timestamps — are supplied by the caller so the reducer stays pure.
+ * PHASE 5. The one genuinely local piece of state is a message's `deliveryState`, which exists
+ * only in this browser: the server has no concept of "sending", because from its point of view a
+ * message either committed or did not.
+ *
+ * Purity is kept deliberately: ids and timestamps that must not vary between renders are supplied
+ * by the caller, so the reducer can be tested without a clock or a socket.
  */
 
 import { hasNameCollision, userDiscriminator } from '@/lib/chat/format';
+import type { ConnectionState } from '@/lib/chat/socket';
 import type {
   ChatMessage,
   Conversation,
-  ConversationMember,
+  DeliveryState,
   UserSummary,
 } from '@/lib/chat/types';
-import { createSeedDirectory, createSeedWorkspace, SEED_CURRENT_USER_ID } from '@/lib/mock/chat-seed';
+import type {
+  ConversationWire,
+  MessageWire,
+  PresenceWire,
+  UserWire,
+} from '@/lib/chat/wire';
 
-/** Which top-level screen is showing. Identity gating only; there is no session behind it. */
-export type Screen = 'name-entry' | 'workspace';
+/** Which top-level screen is showing. */
+export type Screen = 'loading' | 'name-entry' | 'workspace';
+
+/** A user as the directory and conversation lists know them. Presence is tracked separately. */
+export interface DirectoryUser {
+  id: string;
+  displayName: string;
+  lastSeenAt: string | null;
+}
+
+export interface PresenceRecord {
+  online: boolean;
+  lastSeenAt: string | null;
+}
+
+/** What is known about one conversation's history, so the UI can show honest loading states. */
+export interface HistoryState {
+  loading: boolean;
+  loaded: boolean;
+  /** Older messages exist before the oldest one loaded. */
+  hasMore: boolean;
+}
+
+const EMPTY_HISTORY: HistoryState = { loading: false, loaded: false, hasMore: false };
 
 export interface ChatState {
   screen: Screen;
-  currentUser: UserSummary | null;
-  /** Known users other than the current one — the Phase 5 `GET /api/users` directory. */
-  directory: UserSummary[];
+  /** The server-issued identity. `id` is the identity; `displayName` is only a label (D-02). */
+  currentUser: { id: string; displayName: string } | null;
+  /** Every user the interface can name, keyed by id — never by name. */
+  users: Record<string, DirectoryUser>;
+  /** Live presence, from the socket. Absent means "not known to be online". */
+  presence: Record<string, PresenceRecord>;
   conversations: Conversation[];
   messagesByConversation: Record<string, ChatMessage[]>;
+  history: Record<string, HistoryState>;
   selectedConversationId: string | null;
   searchTerm: string;
-  /**
-   * The illustrative workspace is offered once, on first entry. After "Switch User" the next
-   * identity starts empty, because a new identity must never inherit the previous person's
-   * conversations (handover §5).
-   */
-  seedAvailable: boolean;
+  connection: ConnectionState;
+  /** A failure the user should be told about, cleared when it stops being true. */
+  notice: string | null;
+  /** Set after "Switch user", so the name screen can explain what happened. */
+  afterSwitchUser: boolean;
 }
 
 export type ChatAction =
-  | { type: 'enter'; userId: string; displayName: string; now: string }
-  | { type: 'switch-user' }
-  | { type: 'select-conversation'; conversationId: string }
+  | { type: 'identity-missing' }
+  | { type: 'identity-ready'; userId: string; displayName: string }
+  | { type: 'switched-user' }
+  | { type: 'directory-loaded'; users: UserWire[] }
+  | { type: 'conversations-loaded'; conversations: ConversationWire[]; users: UserWire[] }
+  | { type: 'conversation-opened'; conversation: ConversationWire; users: UserWire[] }
+  | { type: 'select-conversation'; conversationId: string | null }
   | { type: 'set-search'; term: string }
+  | { type: 'history-loading'; conversationId: string }
   | {
-      type: 'send-message';
+      type: 'history-loaded';
       conversationId: string;
-      body: string;
-      messageId: string;
+      messages: MessageWire[];
+      hasMore: boolean;
+      /** `replace` for an initial load, `merge` for a reconnect backfill or an older page. */
+      mode: 'replace' | 'merge';
+    }
+  | { type: 'history-failed'; conversationId: string; message: string }
+  | {
+      type: 'message-queued';
+      conversationId: string;
       clientMessageId: string;
+      body: string;
       now: string;
     }
-  | { type: 'start-direct-conversation'; otherUserId: string; conversationId: string; now: string }
-  | {
-      type: 'create-group';
-      conversationId: string;
-      name: string;
-      memberIds: string[];
-      systemMessageId: string;
-      now: string;
-    };
+  | { type: 'message-acknowledged'; clientMessageId: string; message: MessageWire }
+  | { type: 'message-retrying'; conversationId: string; clientMessageId: string }
+  | { type: 'message-failed'; conversationId: string; clientMessageId: string; message: string }
+  | { type: 'message-received'; message: MessageWire }
+  | { type: 'presence-changed'; entries: PresenceWire[] }
+  | { type: 'connection-changed'; connection: ConnectionState }
+  | { type: 'unread-cleared'; conversationId: string; unreadCount: number }
+  | { type: 'notice'; message: string | null };
 
 export const initialChatState: ChatState = {
-  screen: 'name-entry',
+  screen: 'loading',
   currentUser: null,
-  directory: [],
+  users: {},
+  presence: {},
   conversations: [],
   messagesByConversation: {},
+  history: {},
   selectedConversationId: null,
   searchTerm: '',
-  seedAvailable: true,
+  connection: 'connecting',
+  notice: null,
+  afterSwitchUser: false,
 };
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
-    case 'enter':
-      return enterApplication(state, action);
+    case 'identity-missing':
+      return { ...state, screen: 'name-entry', currentUser: null };
 
-    case 'switch-user':
-      return switchUser(state);
-
-    case 'select-conversation':
+    case 'identity-ready':
       return {
         ...state,
-        selectedConversationId: action.conversationId,
-        // Opening a conversation clears its badge. Phase 5 replaces this with
-        // POST /api/conversations/:id/read.
-        conversations: state.conversations.map((conversation) =>
-          conversation.id === action.conversationId
-            ? { ...conversation, unreadCount: 0 }
-            : conversation,
-        ),
+        screen: 'workspace',
+        currentUser: { id: action.userId, displayName: action.displayName },
+        afterSwitchUser: false,
+        notice: null,
       };
+
+    /*
+     * Switch User / Clear Device Identity (F-19).
+     *
+     * Everything the previous identity could see is dropped from memory. Nothing is deleted on
+     * the server — their conversations and messages belong to their `User` and survive (D-14) —
+     * but the next person at this computer starts from an empty screen and a new identity.
+     */
+    case 'switched-user':
+      return { ...initialChatState, screen: 'name-entry', afterSwitchUser: true };
+
+    case 'directory-loaded':
+      return { ...state, users: mergeUsers(state.users, action.users) };
+
+    case 'conversations-loaded':
+      return applyConversationList(state, action.conversations, action.users);
+
+    case 'conversation-opened':
+      return openConversation(state, action.conversation, action.users);
+
+    case 'select-conversation':
+      return selectConversation(state, action.conversationId);
 
     case 'set-search':
       return { ...state, searchTerm: action.term };
 
-    case 'send-message':
-      return sendMessage(state, action);
+    case 'history-loading':
+      return {
+        ...state,
+        history: {
+          ...state.history,
+          [action.conversationId]: {
+            ...(state.history[action.conversationId] ?? EMPTY_HISTORY),
+            loading: true,
+          },
+        },
+      };
 
-    case 'start-direct-conversation':
-      return startDirectConversation(state, action);
+    case 'history-loaded':
+      return applyHistory(state, action);
 
-    case 'create-group':
-      return createGroup(state, action);
+    case 'history-failed':
+      return {
+        ...state,
+        notice: action.message,
+        history: {
+          ...state.history,
+          [action.conversationId]: {
+            ...(state.history[action.conversationId] ?? EMPTY_HISTORY),
+            loading: false,
+          },
+        },
+      };
+
+    case 'message-queued':
+      return queueMessage(state, action);
+
+    case 'message-acknowledged':
+      return acknowledgeMessage(state, action.clientMessageId, action.message);
+
+    case 'message-retrying':
+      return setDeliveryState(state, action.conversationId, action.clientMessageId, 'SENDING');
+
+    case 'message-failed':
+      return {
+        ...setDeliveryState(state, action.conversationId, action.clientMessageId, 'FAILED'),
+        notice: action.message,
+      };
+
+    case 'message-received':
+      return receiveMessage(state, action.message);
+
+    case 'presence-changed':
+      return applyPresence(state, action.entries);
+
+    case 'connection-changed':
+      return { ...state, connection: action.connection };
+
+    case 'unread-cleared':
+      return {
+        ...state,
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === action.conversationId
+            ? { ...conversation, unreadCount: action.unreadCount }
+            : conversation,
+        ),
+      };
+
+    case 'notice':
+      return { ...state, notice: action.message };
 
     default:
       return state;
   }
 }
 
-function enterApplication(
-  state: ChatState,
-  action: Extract<ChatAction, { type: 'enter' }>,
-): ChatState {
-  const now = new Date(action.now);
+/* ------------------------------------------------------------------------------------------- */
+/* Wire → view model                                                                             */
+/* ------------------------------------------------------------------------------------------- */
 
-  const currentUser: UserSummary = {
-    // A display name is a label; the id is the identity (D-02). The two are never conflated,
-    // which is why entering the same name twice produces two different users.
-    //
-    // On first entry the id is the one the illustrative workspace is built around, so the
-    // seeded memberships belong to this user. Every later entry uses a freshly generated id.
-    id: state.seedAvailable ? SEED_CURRENT_USER_ID : action.userId,
-    displayName: action.displayName,
-    presence: 'ONLINE',
-    lastSeenAt: action.now,
+export function toChatMessage(wire: MessageWire, deliveryState: DeliveryState = 'SENT'): ChatMessage {
+  return {
+    id: wire.id,
+    clientMessageId: wire.clientMessageId,
+    conversationId: wire.conversationId,
+    senderId: wire.senderId,
+    kind: wire.type,
+    body: wire.body,
+    createdAt: wire.createdAt,
+    deliveryState,
+    // Phase 7 fills this in; the server does not send attachments yet.
+    attachment: null,
   };
+}
 
-  if (!state.seedAvailable) {
-    // A fresh identity: the mock directory is still visible so a chat can be started, but no
-    // conversation, message or membership carries over from the previous user.
-    return {
-      ...state,
-      screen: 'workspace',
-      currentUser,
-      directory: state.directory,
-      conversations: [],
-      messagesByConversation: {},
-      selectedConversationId: null,
-      searchTerm: '',
+export function toConversation(wire: ConversationWire): Conversation {
+  return {
+    id: wire.id,
+    type: wire.type,
+    name: wire.name,
+    createdAt: wire.createdAt,
+    lastMessageAt: wire.lastMessageAt,
+    members: wire.members.map((member) => ({
+      userId: member.userId,
+      role: member.role,
+      joinedAt: member.joinedAt,
+    })),
+    lastMessage: wire.lastMessage
+      ? {
+          id: wire.lastMessage.id,
+          senderId: wire.lastMessage.senderId,
+          kind: wire.lastMessage.type,
+          body: wire.lastMessage.body,
+          createdAt: wire.lastMessage.createdAt,
+        }
+      : null,
+    unreadCount: wire.unreadCount,
+  };
+}
+
+function mergeUsers(
+  existing: Record<string, DirectoryUser>,
+  incoming: readonly UserWire[],
+): Record<string, DirectoryUser> {
+  if (incoming.length === 0) return existing;
+
+  const merged = { ...existing };
+  for (const user of incoming) {
+    merged[user.id] = {
+      id: user.id,
+      displayName: user.displayName,
+      lastSeenAt: user.lastSeenAt,
     };
   }
+  return merged;
+}
 
-  const seed = createSeedWorkspace(now);
-  const conversations = sortConversations(seed.conversations);
+/* ------------------------------------------------------------------------------------------- */
+/* Transitions                                                                                   */
+/* ------------------------------------------------------------------------------------------- */
+
+function applyConversationList(
+  state: ChatState,
+  wires: readonly ConversationWire[],
+  users: readonly UserWire[],
+): ChatState {
+  const conversations = sortConversations(wires.map(toConversation));
+  const selectedStillExists = conversations.some(
+    (conversation) => conversation.id === state.selectedConversationId,
+  );
 
   return {
     ...state,
-    screen: 'workspace',
-    currentUser,
-    directory: seed.directory,
+    users: mergeUsers(state.users, users),
     conversations,
-    messagesByConversation: seed.messagesByConversation,
-    selectedConversationId: conversations[0]?.id ?? null,
-    searchTerm: '',
-    seedAvailable: false,
+    // A conversation that has gone (or was never the caller's) must not stay open.
+    selectedConversationId: selectedStillExists ? state.selectedConversationId : null,
   };
 }
 
-/**
- * "Switch User / Clear Device Identity" (F-19).
- *
- * In Phase 2 this only drops local state and returns to the name screen. The real control
- * revokes the `Session` and `Device` rows server-side before clearing the cookies
- * (docs/01-architecture.md §5) — clearing the browser alone is not sufficient, because a copied
- * cookie would still resolve.
- *
- * What it does demonstrate correctly is the rule that matters for shared computers: the next
- * identity starts with nothing, and never inherits the previous person's conversations.
- */
-function switchUser(state: ChatState): ChatState {
-  const previousUser = state.currentUser;
+function openConversation(
+  state: ChatState,
+  wire: ConversationWire,
+  users: readonly UserWire[],
+): ChatState {
+  const conversation = toConversation(wire);
+  const others = state.conversations.filter((item) => item.id !== conversation.id);
 
   return {
-    ...initialChatState,
-    seedAvailable: false,
-    // The previous identity remains a known user, as it would in the database — which is also
-    // how a same-name collision becomes visible in the picker.
-    directory: previousUser
-      ? [...state.directory, { ...previousUser, presence: 'OFFLINE' as const }]
-      : state.directory.length > 0
-        ? state.directory
-        : createSeedDirectory(new Date()),
+    ...state,
+    users: mergeUsers(state.users, users),
+    conversations: sortConversations([conversation, ...others]),
+    selectedConversationId: conversation.id,
+    searchTerm: '',
   };
 }
 
-function sendMessage(
+function selectConversation(state: ChatState, conversationId: string | null): ChatState {
+  if (conversationId === null) {
+    return { ...state, selectedConversationId: null };
+  }
+
+  return {
+    ...state,
+    selectedConversationId: conversationId,
+    // The badge clears immediately; the server is told separately and its count wins.
+    conversations: state.conversations.map((conversation) =>
+      conversation.id === conversationId ? { ...conversation, unreadCount: 0 } : conversation,
+    ),
+  };
+}
+
+function applyHistory(
   state: ChatState,
-  action: Extract<ChatAction, { type: 'send-message' }>,
+  action: Extract<ChatAction, { type: 'history-loaded' }>,
 ): ChatState {
-  const body = action.body.trim();
+  const incoming = action.messages.map((message) => toChatMessage(message));
+  const existing = state.messagesByConversation[action.conversationId] ?? [];
+
+  /*
+   * `replace` still merges rather than overwriting: a message the user sent while the page of
+   * history was in flight is in `existing` and must not be thrown away. What `replace` decides is
+   * the `hasMore` flag and that this conversation is now considered loaded.
+   */
+  const messages = mergeMessageLists(existing, incoming);
+
+  return {
+    ...state,
+    messagesByConversation: { ...state.messagesByConversation, [action.conversationId]: messages },
+    history: {
+      ...state.history,
+      [action.conversationId]: {
+        loading: false,
+        loaded: true,
+        hasMore:
+          action.mode === 'replace'
+            ? action.hasMore
+            : (state.history[action.conversationId]?.hasMore ?? action.hasMore),
+      },
+    },
+    conversations: refreshConversationTail(state.conversations, action.conversationId, messages),
+  };
+}
+
+function queueMessage(
+  state: ChatState,
+  action: Extract<ChatAction, { type: 'message-queued' }>,
+): ChatState {
   const sender = state.currentUser;
+  const body = action.body.trim();
   if (!sender || body.length === 0) return state;
 
-  const conversation = state.conversations.find((item) => item.id === action.conversationId);
-  if (!conversation) return state;
-
-  const message: ChatMessage = {
-    id: action.messageId,
+  const optimistic: ChatMessage = {
+    // Until the server answers there is no server id, so the idempotency key stands in as the
+    // React key. It is replaced by the stored row's id on acknowledgement.
+    id: action.clientMessageId,
     clientMessageId: action.clientMessageId,
     conversationId: action.conversationId,
     senderId: sender.id,
     kind: 'TEXT',
     body,
     createdAt: action.now,
-    // Phase 4 flips this to SENT on the server acknowledgement. Here nothing is transmitted,
-    // so the message is marked SENT immediately rather than faking a pending state.
-    deliveryState: 'SENT',
+    deliveryState: 'SENDING',
     attachment: null,
   };
 
-  const existing = state.messagesByConversation[action.conversationId] ?? [];
-
-  return {
-    ...state,
-    messagesByConversation: {
-      ...state.messagesByConversation,
-      [action.conversationId]: [...existing, message],
-    },
-    conversations: sortConversations(
-      state.conversations.map((item) =>
-        item.id === action.conversationId ? { ...item, lastMessageAt: action.now } : item,
-      ),
-    ),
-  };
+  return insertMessage(state, optimistic, { countAsUnread: false });
 }
 
-function startDirectConversation(
+function acknowledgeMessage(
   state: ChatState,
-  action: Extract<ChatAction, { type: 'start-direct-conversation' }>,
+  clientMessageId: string,
+  wire: MessageWire,
 ): ChatState {
-  const currentUser = state.currentUser;
-  if (!currentUser || action.otherUserId === currentUser.id) return state;
+  const existing = state.messagesByConversation[wire.conversationId] ?? [];
+  const stored = toChatMessage(wire, 'SENT');
 
-  const existing = state.conversations.find(
-    (conversation) =>
-      conversation.type === 'DIRECT' &&
-      conversation.members.some((item) => item.userId === action.otherUserId),
+  // Replace the optimistic bubble in place, so the message does not jump position when the
+  // server's timestamp differs from the browser's by a few milliseconds.
+  const replaced = existing.map((message) =>
+    message.clientMessageId === clientMessageId ? stored : message,
   );
 
-  if (existing) {
-    return chatReducer(state, { type: 'select-conversation', conversationId: existing.id });
-  }
-
-  const conversation: Conversation = {
-    id: action.conversationId,
-    type: 'DIRECT',
-    name: null,
-    createdAt: action.now,
-    lastMessageAt: null,
-    // Both members join at creation, so a direct conversation has no join-window gap (D-03).
-    members: [
-      { userId: currentUser.id, role: 'MEMBER', joinedAt: action.now },
-      { userId: action.otherUserId, role: 'MEMBER', joinedAt: action.now },
-    ],
-    unreadCount: 0,
-  };
+  const messages = sortMessages(
+    replaced.some((message) => message.clientMessageId === clientMessageId)
+      ? replaced
+      : [...existing, stored],
+  );
 
   return {
     ...state,
-    conversations: sortConversations([conversation, ...state.conversations]),
-    messagesByConversation: { ...state.messagesByConversation, [conversation.id]: [] },
-    selectedConversationId: conversation.id,
-    searchTerm: '',
+    messagesByConversation: { ...state.messagesByConversation, [wire.conversationId]: messages },
+    conversations: refreshConversationTail(state.conversations, wire.conversationId, messages),
   };
 }
 
-function createGroup(
+/** Flips one optimistic message between `SENDING` and `FAILED`. Server rows are never touched. */
+function setDeliveryState(
   state: ChatState,
-  action: Extract<ChatAction, { type: 'create-group' }>,
+  conversationId: string,
+  clientMessageId: string,
+  deliveryState: DeliveryState,
 ): ChatState {
-  const currentUser = state.currentUser;
-  const name = action.name.trim();
-  if (!currentUser || name.length === 0 || action.memberIds.length === 0) return state;
-
-  const members: ConversationMember[] = [
-    { userId: currentUser.id, role: 'OWNER', joinedAt: action.now },
-    ...action.memberIds
-      .filter((userId) => userId !== currentUser.id)
-      .map((userId) => ({ userId, role: 'MEMBER' as const, joinedAt: action.now })),
-  ];
-
-  const conversation: Conversation = {
-    id: action.conversationId,
-    type: 'GROUP',
-    name,
-    createdAt: action.now,
-    lastMessageAt: action.now,
-    members,
-    unreadCount: 0,
-  };
-
-  const systemMessage: ChatMessage = {
-    id: action.systemMessageId,
-    clientMessageId: action.systemMessageId,
-    conversationId: conversation.id,
-    senderId: null,
-    kind: 'SYSTEM',
-    body: `You created the group "${name}".`,
-    createdAt: action.now,
-    deliveryState: 'SENT',
-    attachment: null,
-  };
+  const existing = state.messagesByConversation[conversationId];
+  if (!existing) return state;
 
   return {
     ...state,
-    conversations: sortConversations([conversation, ...state.conversations]),
     messagesByConversation: {
       ...state.messagesByConversation,
-      [conversation.id]: [systemMessage],
+      [conversationId]: existing.map((message) =>
+        message.clientMessageId === clientMessageId ? { ...message, deliveryState } : message,
+      ),
     },
-    selectedConversationId: conversation.id,
-    searchTerm: '',
   };
+}
+
+function receiveMessage(state: ChatState, wire: MessageWire): ChatState {
+  const isMine = wire.senderId !== null && wire.senderId === state.currentUser?.id;
+  const isOpen = wire.conversationId === state.selectedConversationId;
+
+  return insertMessage(state, toChatMessage(wire, 'SENT'), {
+    // A message counts as unread when it arrives for a conversation the user is not looking at
+    // and did not send themselves (a broadcast to their own other tab).
+    countAsUnread: !isMine && !isOpen,
+  });
+}
+
+function insertMessage(
+  state: ChatState,
+  message: ChatMessage,
+  options: { countAsUnread: boolean },
+): ChatState {
+  const existing = state.messagesByConversation[message.conversationId] ?? [];
+
+  // Already known, by server id or by idempotency key. The second case is what stops a message
+  // appearing twice when a broadcast races the acknowledgement of the same send.
+  if (
+    existing.some(
+      (item) =>
+        (item.id === message.id && item.deliveryState !== 'SENDING') ||
+        item.clientMessageId === message.clientMessageId,
+    )
+  ) {
+    return state;
+  }
+
+  const messages = sortMessages([...existing, message]);
+
+  return {
+    ...state,
+    messagesByConversation: { ...state.messagesByConversation, [message.conversationId]: messages },
+    conversations: refreshConversationTail(state.conversations, message.conversationId, messages, {
+      bumpUnread: options.countAsUnread,
+    }),
+  };
+}
+
+/**
+ * Keeps a conversation's ordering fields in step with its newest delivered message.
+ *
+ * The sidebar shows a preview and an activity time for conversations whose history has not been
+ * opened, so those values live on the conversation rather than being derived from a message list
+ * that may not exist. This is the local echo; `GET /api/conversations` overwrites it.
+ */
+function refreshConversationTail(
+  conversations: readonly Conversation[],
+  conversationId: string,
+  messages: readonly ChatMessage[],
+  options: { bumpUnread?: boolean } = {},
+): Conversation[] {
+  const newest = lastDeliveredMessage(messages);
+  if (!newest) return [...conversations];
+
+  return sortConversations(
+    conversations.map((conversation) =>
+      conversation.id === conversationId
+        ? {
+            ...conversation,
+            lastMessageAt: newest.createdAt,
+            lastMessage: {
+              id: newest.id,
+              senderId: newest.senderId,
+              kind: newest.kind,
+              body: newest.body,
+              createdAt: newest.createdAt,
+            },
+            unreadCount: options.bumpUnread
+              ? conversation.unreadCount + 1
+              : conversation.unreadCount,
+          }
+        : conversation,
+    ),
+  );
+}
+
+function lastDeliveredMessage(messages: readonly ChatMessage[]): ChatMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.deliveryState === 'SENT') return message;
+  }
+  return undefined;
+}
+
+function applyPresence(state: ChatState, entries: readonly PresenceWire[]): ChatState {
+  if (entries.length === 0) return state;
+
+  const presence = { ...state.presence };
+  for (const entry of entries) {
+    presence[entry.userId] = { online: entry.online, lastSeenAt: entry.lastSeenAt };
+  }
+
+  return { ...state, presence };
+}
+
+/* ------------------------------------------------------------------------------------------- */
+/* Message list maintenance                                                                      */
+/* ------------------------------------------------------------------------------------------- */
+
+/** Chronological, with the message id breaking ties — the same order the server pages in. */
+function sortMessages(messages: readonly ChatMessage[]): ChatMessage[] {
+  return [...messages].sort((left, right) => {
+    const difference =
+      new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    return difference !== 0 ? difference : left.id.localeCompare(right.id);
+  });
+}
+
+/**
+ * Merges a page of server messages into what is already on screen.
+ *
+ * Reconciliation is on the server id first and the `clientMessageId` second. The second key is
+ * what makes an optimistic bubble become the stored message rather than sitting next to it.
+ */
+function mergeMessageLists(
+  existing: readonly ChatMessage[],
+  incoming: readonly ChatMessage[],
+): ChatMessage[] {
+  const byId = new Map<string, ChatMessage>();
+  const byClientId = new Map<string, string>();
+
+  for (const message of existing) {
+    byId.set(message.id, message);
+    byClientId.set(message.clientMessageId, message.id);
+  }
+
+  for (const message of incoming) {
+    const previousId = byClientId.get(message.clientMessageId);
+    // The stored row supersedes the optimistic one, which was keyed on the idempotency key.
+    if (previousId !== undefined && previousId !== message.id) byId.delete(previousId);
+
+    byId.set(message.id, message);
+    byClientId.set(message.clientMessageId, message.id);
+  }
+
+  return sortMessages([...byId.values()]);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -330,16 +610,50 @@ export function sortConversations(conversations: readonly Conversation[]): Conve
   );
 }
 
-/** Every user the interface can name, including the current one. Keyed by id, never by name. */
+/**
+ * Every user the interface can name, with their presence resolved. Keyed by id, never by name.
+ *
+ * Presence defaults to `OFFLINE`: the server only reports on people the caller shares a
+ * conversation with, so a colleague who is merely in the directory is shown with their last-seen
+ * time rather than a status the browser is not entitled to know.
+ */
 export function selectUsersById(state: ChatState): Map<string, UserSummary> {
   const users = new Map<string, UserSummary>();
-  for (const user of state.directory) users.set(user.id, user);
-  if (state.currentUser) users.set(state.currentUser.id, state.currentUser);
+
+  for (const user of Object.values(state.users)) {
+    const presence = state.presence[user.id];
+    users.set(user.id, {
+      id: user.id,
+      displayName: user.displayName,
+      presence: presence?.online ? 'ONLINE' : 'OFFLINE',
+      lastSeenAt: presence?.lastSeenAt ?? user.lastSeenAt,
+    });
+  }
+
+  if (state.currentUser) {
+    const existing = users.get(state.currentUser.id);
+    users.set(state.currentUser.id, {
+      id: state.currentUser.id,
+      displayName: state.currentUser.displayName,
+      // The user is looking at the page, so they are online by construction.
+      presence: 'ONLINE',
+      lastSeenAt: existing?.lastSeenAt ?? null,
+    });
+  }
+
   return users;
 }
 
 export function selectAllUsers(state: ChatState): UserSummary[] {
   return [...selectUsersById(state).values()];
+}
+
+/** The directory, excluding the current user, for the "New chat" picker. */
+export function selectDirectoryUsers(state: ChatState): UserSummary[] {
+  const currentUserId = state.currentUser?.id;
+  return selectAllUsers(state)
+    .filter((user) => user.id !== currentUserId)
+    .sort((left, right) => left.displayName.localeCompare(right.displayName));
 }
 
 export function selectSelectedConversation(state: ChatState): Conversation | null {
@@ -349,6 +663,10 @@ export function selectSelectedConversation(state: ChatState): Conversation | nul
 
 export function selectMessages(state: ChatState, conversationId: string): ChatMessage[] {
   return state.messagesByConversation[conversationId] ?? [];
+}
+
+export function selectHistoryState(state: ChatState, conversationId: string): HistoryState {
+  return state.history[conversationId] ?? EMPTY_HISTORY;
 }
 
 /** The other participant of a direct conversation, from the current user's point of view. */
@@ -373,10 +691,16 @@ export function conversationTitle(
   return counterpart?.displayName ?? 'Unknown user';
 }
 
-/** Single-line preview for the conversation list. */
+/**
+ * Single-line preview for the conversation list.
+ *
+ * Prefers the newest delivered message on screen, falling back to the server's preview for a
+ * conversation whose history has not been opened. A message still sending, or one that failed,
+ * is not previewed: the sidebar should not claim something was said that was not.
+ */
 export function conversationPreview(state: ChatState, conversation: Conversation): string {
-  const messages = selectMessages(state, conversation.id);
-  const last = messages[messages.length - 1];
+  const loaded = selectMessages(state, conversation.id);
+  const last = lastDeliveredMessage(loaded) ?? conversation.lastMessage;
   if (!last) return 'No messages yet';
 
   if (last.kind === 'SYSTEM') return last.body ?? '';

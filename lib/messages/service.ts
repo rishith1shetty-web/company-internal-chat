@@ -182,3 +182,152 @@ export async function recordSystemMessage(
     return created;
   });
 }
+
+/* --------------------------------------------------------------------------------------------- */
+/* History (Phase 5)                                                                               */
+/* --------------------------------------------------------------------------------------------- */
+
+/** Initial history window. Enough to fill a screen and scroll back a little. */
+export const HISTORY_DEFAULT_LIMIT = 50;
+/** Ceiling, so a crafted `limit` cannot ask for a conversation's entire history in one request. */
+export const HISTORY_MAX_LIMIT = 100;
+
+export type ListMessagesFailure = 'NOT_A_MEMBER' | 'INVALID_CURSOR';
+
+export class ListMessagesError extends Error {
+  readonly reason: ListMessagesFailure;
+
+  constructor(reason: ListMessagesFailure, message: string) {
+    super(message);
+    this.name = 'ListMessagesError';
+    this.reason = reason;
+  }
+}
+
+export interface ListMessagesInput {
+  /** Server-derived. Never accepted from the client. */
+  userId: string;
+  conversationId: string;
+  /** Page backwards: messages older than this message id. */
+  before?: string | undefined;
+  /** Backfill forwards: messages newer than this message id. Used after a reconnect. */
+  after?: string | undefined;
+  limit?: number | undefined;
+}
+
+export interface MessagePage {
+  /** Oldest first, so the caller can append them to a rendered list without re-sorting. */
+  messages: StoredMessage[];
+  /** True when more messages exist beyond this page in the direction that was paged. */
+  hasMore: boolean;
+}
+
+/**
+ * Reads a page of conversation history.
+ *
+ * Two rules, both enforced here rather than by the caller:
+ *
+ * 1. **Membership.** A conversation id from a browser is a request, not a permission. Failure is
+ *    indistinguishable from "no such conversation" on purpose.
+ *
+ * 2. **`joinedAt` (D-03).** Every query filters `createdAt >= joinedAt`, including the cursor
+ *    lookup — otherwise a member could page backwards past their own join time by handing in the
+ *    id of a message from before it.
+ *
+ * Pagination is keyset on `(createdAt, id)`, matching the index the schema declares for exactly
+ * this query. OFFSET would silently skip or repeat rows as messages arrive underneath it, which
+ * in a live chat is not a theoretical concern.
+ */
+export async function listMessages(
+  db: PrismaClient,
+  input: ListMessagesInput,
+): Promise<MessagePage> {
+  const membership = await findActiveMembership(db, input.userId, input.conversationId);
+  if (!membership) {
+    throw new ListMessagesError('NOT_A_MEMBER', 'You do not have access to this conversation.');
+  }
+
+  const limit = clampHistoryLimit(input.limit);
+  const window = { conversationId: input.conversationId, createdAt: { gte: membership.joinedAt } };
+
+  if (input.after !== undefined) {
+    const cursor = await loadCursor(db, input.conversationId, membership.joinedAt, input.after);
+
+    // Strictly newer than the cursor, oldest first: this is the reconnect backfill.
+    const messages = await db.message.findMany({
+      where: {
+        ...window,
+        OR: [
+          { createdAt: { gt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, id: { gt: cursor.id } },
+        ],
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: limit + 1,
+      select: messageSelection,
+    });
+
+    const hasMore = messages.length > limit;
+    return { messages: hasMore ? messages.slice(0, limit) : messages, hasMore };
+  }
+
+  // Newest-first read, reversed before returning. `before` pages further back from a cursor;
+  // without one this is the initial window at the end of the conversation.
+  const olderThan =
+    input.before === undefined
+      ? undefined
+      : await loadCursor(db, input.conversationId, membership.joinedAt, input.before);
+
+  const newestFirst = await db.message.findMany({
+    where: {
+      ...window,
+      ...(olderThan
+        ? {
+            OR: [
+              { createdAt: { lt: olderThan.createdAt } },
+              { createdAt: olderThan.createdAt, id: { lt: olderThan.id } },
+            ],
+          }
+        : {}),
+    },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: limit + 1,
+    select: messageSelection,
+  });
+
+  const hasMore = newestFirst.length > limit;
+  const page = hasMore ? newestFirst.slice(0, limit) : newestFirst;
+
+  return { messages: page.reverse(), hasMore };
+}
+
+/**
+ * Resolves a pagination cursor.
+ *
+ * The cursor is a message id from the browser, so it is verified rather than trusted: it must
+ * belong to this conversation and lie inside the caller's visible window. An id that does not is
+ * rejected as an invalid request — not silently ignored, which would quietly return the wrong
+ * page, and not reported as "not found", which would confirm that the id exists elsewhere.
+ */
+async function loadCursor(
+  db: PrismaClient,
+  conversationId: string,
+  joinedAt: Date,
+  messageId: string,
+): Promise<{ id: string; createdAt: Date }> {
+  const cursor = await db.message.findFirst({
+    where: { id: messageId, conversationId, createdAt: { gte: joinedAt } },
+    select: { id: true, createdAt: true },
+  });
+
+  if (!cursor) {
+    throw new ListMessagesError('INVALID_CURSOR', 'That position in the conversation is not valid.');
+  }
+
+  return cursor;
+}
+
+function clampHistoryLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return HISTORY_DEFAULT_LIMIT;
+  return Math.min(Math.max(Math.trunc(limit), 1), HISTORY_MAX_LIMIT);
+}

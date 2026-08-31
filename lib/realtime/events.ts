@@ -18,8 +18,30 @@ import { z } from 'zod';
 
 import { MAX_MESSAGE_LENGTH } from '../messages/service';
 
-/** Socket.IO path. Shares the application's origin and port (D-09). */
-export const SOCKET_PATH = '/socket.io';
+/*
+ * The payload shapes live in lib/chat/wire.ts, which imports nothing and is safe for the browser
+ * bundle to pull in. They are re-exported here so that existing server-side imports of this
+ * module keep working and there is still exactly one definition of each shape.
+ */
+export { SOCKET_PATH } from '../chat/wire';
+export type {
+  Ack,
+  JoinedConversationWire,
+  MessageWire,
+  PresenceWire,
+  SessionWire,
+  SocketError,
+  SocketErrorCode,
+} from '../chat/wire';
+
+import type {
+  Ack,
+  JoinedConversationWire,
+  MessageWire,
+  PresenceWire,
+  SessionWire,
+  SocketError,
+} from '../chat/wire';
 
 /* ------------------------------------------------------------------------------------------- */
 /* Payload schemas                                                                               */
@@ -54,78 +76,22 @@ export type LeaveConversationPayload = z.infer<typeof leaveConversationSchema>;
 export type SendMessagePayload = z.infer<typeof sendMessageSchema>;
 
 /* ------------------------------------------------------------------------------------------- */
-/* Error codes                                                                                   */
-/* ------------------------------------------------------------------------------------------- */
-
-/**
- * The complete set of failures a client is ever told about.
- *
- * Codes are stable and coarse on purpose. `FORBIDDEN` covers both "not a member" and "no such
- * conversation", because telling an outsider which conversation ids exist is a disclosure in
- * itself. Nothing here carries a stack trace, a SQL string, a path or a configuration value
- * (CLAUDE.md §13).
- */
-export type SocketErrorCode =
-  | 'UNAUTHENTICATED'
-  | 'FORBIDDEN'
-  | 'INVALID_PAYLOAD'
-  | 'MESSAGE_TOO_LONG'
-  | 'MESSAGE_EMPTY'
-  | 'RATE_LIMITED'
-  | 'INTERNAL_ERROR';
-
-export interface SocketError {
-  code: SocketErrorCode;
-  /** Safe, human-readable, and free of internals. */
-  message: string;
-}
-
-/** Every acknowledged action answers with this shape. */
-export type Ack<T> = { ok: true; data: T } | { ok: false; error: SocketError };
-
-/* ------------------------------------------------------------------------------------------- */
-/* Wire types                                                                                    */
-/* ------------------------------------------------------------------------------------------- */
-
-/** A message as it travels to a browser. Timestamps are ISO-8601 UTC strings. */
-export interface MessageWire {
-  id: string;
-  conversationId: string;
-  senderId: string | null;
-  clientMessageId: string;
-  type: 'TEXT' | 'FILE' | 'SYSTEM';
-  body: string | null;
-  createdAt: string;
-}
-
-export interface PresenceWire {
-  userId: string;
-  online: boolean;
-  /** ISO-8601 UTC. Null when the user has never been seen. */
-  lastSeenAt: string | null;
-}
-
-export interface JoinedConversationWire {
-  conversationId: string;
-  /**
-   * The start of this member's visible history window (D-03). Sent so the client knows not to
-   * ask for anything older; the server enforces it regardless of what the client does.
-   */
-  joinedAt: string;
-}
-
-export interface SessionWire {
-  userId: string;
-  displayName: string;
-  /** Conversations this socket was authorized to join, decided server-side at connection time. */
-  conversationIds: string[];
-}
-
-/* ------------------------------------------------------------------------------------------- */
 /* Event maps                                                                                    */
 /* ------------------------------------------------------------------------------------------- */
 
 export interface ClientToServerEvents {
+  /**
+   * Ask for the current presence of everyone the caller shares an active conversation with.
+   *
+   * A snapshot, not a subscription: `presence:update` already pushes changes. This exists because
+   * a client that has just connected — or that has just started a conversation with somebody —
+   * has no way to know who is already online, and presence is deliberately not public, so it
+   * cannot simply be included in a directory response (Phase 4 scopes presence to shared
+   * conversations). The peer set is computed server-side from the database; the payload is
+   * ignored, and a client cannot ask about a user it shares nothing with.
+   */
+  'presence:sync': (payload: unknown, ack: (response: Ack<PresenceWire[]>) => void) => void;
+
   /** Ask to join a conversation room. Granted only if the server confirms active membership. */
   'conversation:join': (
     payload: unknown,

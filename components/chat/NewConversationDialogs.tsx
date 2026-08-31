@@ -13,10 +13,18 @@ interface NewChatDialogProps {
   users: UserSummary[];
   onClose: () => void;
   onStart: (userId: string) => void;
+  /** Widens the search beyond the colleagues already loaded, by asking the server. */
+  onSearch?: (term: string) => void;
 }
 
-/** Start a one-to-one conversation with a colleague. */
-export function NewChatDialog({ users, onClose, onStart }: NewChatDialogProps) {
+/**
+ * Start a one-to-one conversation with a colleague.
+ *
+ * The list is keyed on user ids. Two colleagues may share a display name (D-02), and the picker
+ * shows an id-derived discriminator so they can be told apart — choosing "Sarah Chen" is never
+ * ambiguous, because what is submitted is an id, not the name that was matched.
+ */
+export function NewChatDialog({ users, onClose, onStart, onSearch }: NewChatDialogProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
@@ -44,7 +52,10 @@ export function NewChatDialog({ users, onClose, onStart }: NewChatDialogProps) {
       <UserPicker
         users={users}
         searchTerm={search}
-        onSearchChange={setSearch}
+        onSearchChange={(term) => {
+          setSearch(term);
+          onSearch?.(term);
+        }}
         selectedIds={selectedId ? [selectedId] : []}
         onToggle={(userId) => setSelectedId((current) => (current === userId ? null : userId))}
         mode="single"
@@ -59,7 +70,14 @@ interface NewGroupDialogProps {
   onCreate: (name: string, memberIds: string[]) => void;
 }
 
-/** Create a group conversation: a name and at least one other member. */
+/**
+ * Create a group conversation: a name and at least one other member.
+ *
+ * NOT WIRED UP YET. Group creation is Phase 6, and needs `POST /api/conversations` to accept
+ * `type: "GROUP"` plus the server-side role rules that go with adding and removing members. The
+ * component is complete and left in place for that phase; until then the "New group" control
+ * opens `GroupsUnavailableDialog` instead of a form that could not save anything.
+ */
 export function NewGroupDialog({ users, onClose, onCreate }: NewGroupDialogProps) {
   const [name, setName] = useState('');
   const [memberIds, setMemberIds] = useState<string[]>([]);

@@ -69,11 +69,12 @@ export function Sidebar({
       </nav>
 
       {/*
-        Phase marker. The interface is deliberately honest about what it is: no message here is
-        stored, sent, or delivered to anyone (handover §22).
+        Honest about what the application can currently do. One-to-one conversations are real and
+        persistent; groups (Phase 6) and file transfer (Phase 7) are not built yet, and saying so
+        is better than a control that silently does nothing.
       */}
       <p className="shrink-0 border-t border-line px-3 py-2 text-xs text-ink-subtle">
-        Phase 2 preview · sample data, nothing is saved
+        One-to-one chat · groups and file transfer coming later
       </p>
     </div>
   );

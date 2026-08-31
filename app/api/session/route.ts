@@ -21,34 +21,16 @@ import {
   resolveIdentity,
   switchUser,
 } from '@/lib/auth/session';
-import { loadConfig } from '@/lib/config/env';
 import { getDb } from '@/lib/db/prisma';
-import { createLogger, describeError } from '@/lib/logging/logger';
+import {
+  apiError as safeError,
+  cookieOptions,
+  identityConfig,
+  routeLogger as logger,
+} from '@/lib/http/route-helpers';
+import { describeError } from '@/lib/logging/logger';
 
 export const dynamic = 'force-dynamic';
-
-const config = loadConfig();
-const logger = createLogger({ level: config.logLevel, pretty: !config.isProduction });
-
-const identityConfig = {
-  sessionTtlHours: config.sessionTtlHours,
-  deviceTtlDays: config.deviceTtlDays,
-};
-
-/** Cookie attributes. `Secure` only in production, where TLS terminates at the reverse proxy. */
-function cookieOptions(expires: Date) {
-  return {
-    httpOnly: true, // JavaScript cannot read it, so an XSS bug cannot exfiltrate it.
-    sameSite: 'lax' as const, // Blocks cross-site POSTs from carrying the cookie (CSRF).
-    secure: config.isProduction,
-    path: '/',
-    expires,
-  };
-}
-
-function safeError(status: number, code: string, message: string): NextResponse {
-  return NextResponse.json({ error: { code, message } }, { status });
-}
 
 /**
  * POST /api/session — enter with a display name.

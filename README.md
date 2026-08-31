@@ -3,12 +3,12 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 4 complete — real-time messaging infrastructure.**
-The application serves the full Phase 2 interface, backed by a PostgreSQL schema and a Socket.IO
-gateway that authenticates every connection, authorizes conversation rooms from the database, and
-persists messages before delivering them. The interface itself is **not yet wired to it**: it
-still runs on local sample data and stores nothing. Connecting the two is Phase 5; group chat,
-file transfer and network restriction follow in Phases 6–8.
+**Current status: Phase 5 complete — working one-to-one chat.**
+Colleagues enter a display name, find each other, and hold private conversations that are
+delivered in real time and stored in PostgreSQL. Messages, conversations and read state survive a
+refresh, a reconnection, session expiry and a restart. Group chat, file transfer and network
+restriction follow in Phases 6–8; both of those controls are present in the interface and say so
+rather than appearing to work.
 
 ## Scope of version 1
 
@@ -37,6 +37,7 @@ authentication. AI features are deferred to Phase 11 and must not appear before 
 | [docs/08-phase-2-ui.md](docs/08-phase-2-ui.md) | **Chat interface: screens, components, design tokens, accessibility, how later phases replace the sample data** |
 | [docs/09-phase-3-database.md](docs/09-phase-3-database.md) | **Database layer: schema, constraints, migration strategy, role permissions, tests, manual setup steps** |
 | [docs/10-phase-4-realtime.md](docs/10-phase-4-realtime.md) | **Real-time layer: Socket.IO architecture, identity, event contract, rooms, message flow, presence, tests** |
+| [docs/11-phase-5-direct-chat.md](docs/11-phase-5-direct-chat.md) | **One-to-one chat: REST endpoints, directory, conversation resolution, history pagination, unread counts, reconnection, tests** |
 
 ## Stack
 
@@ -95,6 +96,7 @@ Copy-Item .env.example .env   # Windows PowerShell
 | `npm run lint` | ESLint |
 | `npm test` | Vitest (database tests skip when no `DATABASE_URL` is set) |
 | `npm run db:check` | **Read-only.** Print the redacted database target, confirm it is `company_chat_db`, report role privileges and which tables exist |
+| `npm run db:audit` | **Read-only.** Print row counts per table and list any leftover test rows, so a test run can be shown to have cleaned up after itself |
 | `npm run db:generate` | Regenerate the Prisma client (also runs on install and build) |
 | `npm run db:status` | Show which migrations have been applied |
 | `npm run db:migrate` | Apply pending migrations (`prisma migrate deploy`) — forward only |

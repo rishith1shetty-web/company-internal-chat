@@ -10,6 +10,10 @@ import { MAX_DISPLAY_NAME_LENGTH } from '@/lib/chat/types';
 
 interface NameEntryScreenProps {
   onEnter: (displayName: string) => void;
+  /** True while the server is issuing the identity. */
+  pending: boolean;
+  /** A failure from the server, e.g. an unreachable database or a rejected name. */
+  error: string | null;
   /** Shown after "Switch user", so it is obvious the previous identity was left behind. */
   afterSwitchUser: boolean;
 }
@@ -20,16 +24,22 @@ interface NameEntryScreenProps {
  * v1 has no password by design (D-11). What the user types here is a label; the identity is a
  * server-issued id, and entering the same name twice produces two different users (D-02).
  *
- * PHASE 2: no session or device identity is created — there is no server call at all. Phase 5
- * replaces this submit handler with POST /api/session, which issues the session and device
- * cookies described in docs/01-architecture.md §5.
+ * Submitting calls `POST /api/session`, which creates the `User`, `Session` and `Device` rows and
+ * sets the two `HttpOnly` cookies described in docs/01-architecture.md §5. The name is validated
+ * again on the server — the checks below are a courtesy to the user, never a control.
  */
-export function NameEntryScreen({ onEnter, afterSwitchUser }: NameEntryScreenProps) {
+export function NameEntryScreen({
+  onEnter,
+  pending,
+  error: serverError,
+  afterSwitchUser,
+}: NameEntryScreenProps) {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending) return;
 
     const trimmed = displayName.trim();
     if (trimmed.length < 2) {
@@ -79,8 +89,21 @@ export function NameEntryScreen({ onEnter, afterSwitchUser }: NameEntryScreenPro
               required
             />
 
-            <Button type="submit" variant="primary" fullWidth className="mt-5">
-              Continue
+            {/* A server refusal is shown separately: it is about the request, not the field. */}
+            {serverError && !error ? (
+              <p className="mt-3 text-sm text-danger" role="alert">
+                {serverError}
+              </p>
+            ) : null}
+
+            <Button
+              type="submit"
+              variant="primary"
+              fullWidth
+              className="mt-5"
+              disabled={pending}
+            >
+              {pending ? 'Starting…' : 'Continue'}
             </Button>
           </form>
 
@@ -94,7 +117,8 @@ export function NameEntryScreen({ onEnter, afterSwitchUser }: NameEntryScreenPro
         </div>
 
         <p className="mt-4 text-center text-xs text-ink-subtle">
-          Phase 2 preview — interface only. Nothing you type is sent to a server or stored.
+          Your conversations and messages are stored on the company server and remain available
+          when you return.
         </p>
       </div>
     </main>
