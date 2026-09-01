@@ -17,16 +17,16 @@
  *     row is committed. A failed send is shown as failed and can be retried with the same
  *     `clientMessageId`, so the retry collides with the stored row instead of duplicating it.
  *
- * No identity is ever sent from here. The session and device cookies are `HttpOnly`; the server
- * derives the user from them on both transports.
+ * No identity is ever sent from here, and none can be chosen here. The session and device
+ * cookies are `HttpOnly`; the server derives the user from the computer's assignment on both
+ * transports. There is deliberately no `enter`, no `switchUser` and no way to clear an identity —
+ * assignment is an administrator's job (docs/12-admin-device-identity.md).
  */
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import {
   ApiError,
-  createSession,
-  endSession,
   fetchConversations,
   fetchDirectory,
   fetchMessages,
@@ -47,10 +47,6 @@ const HISTORY_PAGE_SIZE = 50;
 
 export interface ChatSession {
   state: ChatState;
-  /** True while `POST /api/session` is in flight, so the entry screen can disable its button. */
-  entering: boolean;
-  enter(displayName: string): Promise<void>;
-  switchUser(): Promise<boolean>;
   selectConversation(conversationId: string): void;
   startDirectConversation(userId: string): Promise<void>;
   /** Re-reads the colleague list, so a picker never opens on a stale directory. */
@@ -65,7 +61,6 @@ export interface ChatSession {
 
 export function useChatSession(): ChatSession {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
-  const [entering, setEntering] = useState(false);
 
   const socketRef = useRef<ChatSocketClient | null>(null);
   /*
@@ -88,14 +83,20 @@ export function useChatSession(): ChatSession {
   /* ----------------------------------------------------------------------------------------- */
 
   /**
-   * A 401 means the identity has gone — the session expired and there is no usable device cookie,
-   * or it was revoked elsewhere. The only correct response is the name screen; carrying on with
-   * a stale user id on screen would be a lie.
+   * A 401 means this computer no longer resolves to anybody: the assignment was retired, or an
+   * administrator reassigned the machine and the previous session was revoked with it.
+   *
+   * The only correct response is to stop showing a workspace that is no longer this person's.
+   * Carrying on with a stale user id on screen would be a lie, and there is nothing the employee
+   * can do here to fix it — so the message says who can.
    */
   const handleFailure = useCallback((error: unknown, fallback: string) => {
     if (error instanceof ApiError && error.isUnauthenticated) {
       dispatch({ type: 'identity-missing' });
-      dispatch({ type: 'notice', message: 'Your session ended. Enter your name to continue.' });
+      dispatch({
+        type: 'notice',
+        message: 'This computer is no longer signed in. Contact IT to have it set up again.',
+      });
       return;
     }
 
@@ -233,6 +234,7 @@ export function useChatSession(): ChatSession {
             type: 'identity-ready',
             userId: identity.userId,
             displayName: identity.displayName,
+            deviceLabel: identity.deviceLabel,
           });
         } else {
           dispatch({ type: 'identity-missing' });
@@ -362,57 +364,6 @@ export function useChatSession(): ChatSession {
   /* ----------------------------------------------------------------------------------------- */
   /* Actions                                                                                     */
   /* ----------------------------------------------------------------------------------------- */
-
-  const enter = useCallback(async (displayName: string) => {
-    setEntering(true);
-    try {
-      const identity = await createSession(displayName);
-      dispatch({
-        type: 'identity-ready',
-        userId: identity.userId,
-        displayName: identity.displayName,
-      });
-    } catch (error) {
-      dispatch({
-        type: 'notice',
-        message: error instanceof ApiError ? error.message : 'Could not start a session.',
-      });
-    } finally {
-      setEntering(false);
-    }
-  }, []);
-
-  /**
-   * Switch User / Clear Device Identity (F-19).
-   *
-   * Returns false and changes nothing locally when the server call fails. Clearing the screen
-   * while the session and device rows still exist would be the worst of both worlds on a shared
-   * computer: the next person would see an empty interface but still hold a working cookie.
-   */
-  const switchUser = useCallback(async (): Promise<boolean> => {
-    try {
-      await endSession();
-    } catch (error) {
-      dispatch({
-        type: 'notice',
-        message:
-          error instanceof ApiError && error.status !== 0
-            ? error.message
-            : 'Could not switch user. Check your connection and try again.',
-      });
-      return false;
-    }
-
-    socketRef.current?.close();
-    socketRef.current = null;
-    openConversationRef.current = null;
-    newestMessageRef.current = null;
-    oldestMessageRef.current = null;
-    knownConversationsRef.current = new Set();
-
-    dispatch({ type: 'switched-user' });
-    return true;
-  }, []);
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -583,9 +534,6 @@ export function useChatSession(): ChatSession {
 
   return {
     state,
-    entering,
-    enter,
-    switchUser,
     selectConversation,
     startDirectConversation,
     refreshDirectory,

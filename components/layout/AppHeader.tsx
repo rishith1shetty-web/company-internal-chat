@@ -7,8 +7,9 @@ import type { UserSummary } from '@/lib/chat/types';
 
 interface AppHeaderProps {
   currentUser: UserSummary;
+  /** The administrator's name for this computer. Shown to the employee, never editable by them. */
+  deviceLabel: string;
   onToggleSidebar: () => void;
-  onSwitchUser: () => void;
   onOpenSettings: () => void;
 }
 
@@ -19,8 +20,8 @@ interface AppHeaderProps {
  */
 export function AppHeader({
   currentUser,
+  deviceLabel,
   onToggleSidebar,
-  onSwitchUser,
   onOpenSettings,
 }: AppHeaderProps) {
   return (
@@ -42,7 +43,7 @@ export function AppHeader({
 
       <UserMenu
         currentUser={currentUser}
-        onSwitchUser={onSwitchUser}
+        deviceLabel={deviceLabel}
         onOpenSettings={onOpenSettings}
       />
     </header>

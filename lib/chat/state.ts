@@ -31,8 +31,14 @@ import type {
   UserWire,
 } from '@/lib/chat/wire';
 
-/** Which top-level screen is showing. */
-export type Screen = 'loading' | 'name-entry' | 'workspace';
+/**
+ * Which top-level screen is showing.
+ *
+ * `unassigned` replaced the old name-entry screen. It is not a form and has no action on it: a
+ * computer that has not been assigned to an employee is something only an administrator can fix
+ * (docs/12-admin-device-identity.md).
+ */
+export type Screen = 'loading' | 'unassigned' | 'workspace';
 
 /** A user as the directory and conversation lists know them. Presence is tracked separately. */
 export interface DirectoryUser {
@@ -58,8 +64,13 @@ const EMPTY_HISTORY: HistoryState = { loading: false, loaded: false, hasMore: fa
 
 export interface ChatState {
   screen: Screen;
-  /** The server-issued identity. `id` is the identity; `displayName` is only a label (D-02). */
-  currentUser: { id: string; displayName: string } | null;
+  /**
+   * The identity this computer is assigned to. `id` is the identity; `displayName` is only a
+   * label (D-02), and `deviceLabel` is the administrator's name for the machine, shown read-only.
+   *
+   * Nothing in the interface can change any of the three.
+   */
+  currentUser: { id: string; displayName: string; deviceLabel: string } | null;
   /** Every user the interface can name, keyed by id — never by name. */
   users: Record<string, DirectoryUser>;
   /** Live presence, from the socket. Absent means "not known to be online". */
@@ -72,14 +83,11 @@ export interface ChatState {
   connection: ConnectionState;
   /** A failure the user should be told about, cleared when it stops being true. */
   notice: string | null;
-  /** Set after "Switch user", so the name screen can explain what happened. */
-  afterSwitchUser: boolean;
 }
 
 export type ChatAction =
   | { type: 'identity-missing' }
-  | { type: 'identity-ready'; userId: string; displayName: string }
-  | { type: 'switched-user' }
+  | { type: 'identity-ready'; userId: string; displayName: string; deviceLabel: string }
   | { type: 'directory-loaded'; users: UserWire[] }
   | { type: 'conversations-loaded'; conversations: ConversationWire[]; users: UserWire[] }
   | { type: 'conversation-opened'; conversation: ConversationWire; users: UserWire[] }
@@ -123,32 +131,32 @@ export const initialChatState: ChatState = {
   searchTerm: '',
   connection: 'connecting',
   notice: null,
-  afterSwitchUser: false,
 };
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
+    /*
+     * No assigned identity: an unset-up computer, or one whose assignment was retired.
+     *
+     * Everything the previous identity could see is dropped from memory. Nothing is deleted on
+     * the server — conversations and messages belong to their `User` and survive (D-14). This is
+     * also where a reassignment lands: the browser asks who it is, is told nothing, and shows the
+     * unassigned screen until the new employee's session is established on the next request.
+     */
     case 'identity-missing':
-      return { ...state, screen: 'name-entry', currentUser: null };
+      return { ...initialChatState, screen: 'unassigned' };
 
     case 'identity-ready':
       return {
         ...state,
         screen: 'workspace',
-        currentUser: { id: action.userId, displayName: action.displayName },
-        afterSwitchUser: false,
+        currentUser: {
+          id: action.userId,
+          displayName: action.displayName,
+          deviceLabel: action.deviceLabel,
+        },
         notice: null,
       };
-
-    /*
-     * Switch User / Clear Device Identity (F-19).
-     *
-     * Everything the previous identity could see is dropped from memory. Nothing is deleted on
-     * the server — their conversations and messages belong to their `User` and survive (D-14) —
-     * but the next person at this computer starts from an empty screen and a new identity.
-     */
-    case 'switched-user':
-      return { ...initialChatState, screen: 'name-entry', afterSwitchUser: true };
 
     case 'directory-loaded':
       return { ...state, users: mergeUsers(state.users, action.users) };

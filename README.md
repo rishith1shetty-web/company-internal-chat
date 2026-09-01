@@ -3,23 +3,38 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 5 complete — working one-to-one chat.**
-Colleagues enter a display name, find each other, and hold private conversations that are
-delivered in real time and stored in PostgreSQL. Messages, conversations and read state survive a
-refresh, a reconnection, session expiry and a restart. Group chat, file transfer and network
-restriction follow in Phases 6–8; both of those controls are present in the interface and say so
-rather than appearing to work.
+**Current status: Phase 5 complete — working one-to-one chat, with admin-assigned identity.**
+An administrator assigns each company computer to a named employee; whoever sits at it opens the
+application and is already recognised, with nothing to sign in to and no way to change who they
+are. Colleagues find each other and hold private conversations that are delivered in real time and
+stored in PostgreSQL. Messages, conversations and read state survive a refresh, a reconnection,
+session expiry and a restart. Group chat, file transfer and network restriction follow in
+Phases 6–8; both of those controls are present in the interface and say so rather than appearing to
+work.
 
 ## Scope of version 1
 
 One-to-one chat · group chat · real-time messaging · file upload and download ·
 online/offline presence · company-network-restricted access.
 
-Display-name identity only — no passwords in v1, by design, with the identity layer built so
-that real company authentication can replace it without redesign. A 24-hour idle session plus a
-long-lived device identity keeps a browser attached to the same user across expiry, with a
-"Switch User" control for shared computers; the device identity is a convenience mechanism, not
-authentication. AI features are deferred to Phase 11 and must not appear before then.
+No passwords in v1, by design, with the identity layer built so that real company authentication
+can replace it without redesign. **Identity is assigned by an administrator to a company computer**
+and is not something an employee can create, choose, change or clear
+([docs/12-admin-device-identity.md](docs/12-admin-device-identity.md)). A 24-hour idle session plus
+a long-lived device identity keeps a browser attached to that computer's assigned employee across
+expiry; the device identity is a convenience mechanism, not authentication. AI features are
+deferred to Phase 11 and must not appear before then.
+
+### Setting up a computer
+
+1. Set `ADMIN_TOKEN` in `.env` (at least 24 characters) and start the server. Without it the
+   administration surface is closed and no computer can be assigned.
+2. Open `/admin`, sign in, and register the computer with a name (`PC-001`) and the employee's
+   name. A one-time setup code is shown **once**.
+3. On that computer, open `/setup` and enter the code. That machine is now that employee's.
+4. When the computer changes hands, press **Reassign** in `/admin` and enter the new employee's
+   name. The new employee gets their own account and their own history; the previous employee's is
+   kept and is not transferred. Nobody needs to visit the machine.
 
 ## Documentation
 
@@ -38,6 +53,7 @@ authentication. AI features are deferred to Phase 11 and must not appear before 
 | [docs/09-phase-3-database.md](docs/09-phase-3-database.md) | **Database layer: schema, constraints, migration strategy, role permissions, tests, manual setup steps** |
 | [docs/10-phase-4-realtime.md](docs/10-phase-4-realtime.md) | **Real-time layer: Socket.IO architecture, identity, event contract, rooms, message flow, presence, tests** |
 | [docs/11-phase-5-direct-chat.md](docs/11-phase-5-direct-chat.md) | **One-to-one chat: REST endpoints, directory, conversation resolution, history pagination, unread counts, reconnection, tests** |
+| [docs/12-admin-device-identity.md](docs/12-admin-device-identity.md) | **Admin-assigned identity: the device registry, setup codes, assignment and reassignment flows, admin access and its limits** |
 
 ## Stack
 
@@ -156,6 +172,10 @@ Session expiry is temporary authentication state only. Messages, conversations, 
 memberships, file metadata and uploaded files persist in PostgreSQL independently of any session
 and are never deleted by expiry, browser close, refresh, restart, inactivity, or reconnection. See
 [docs/02-database.md](docs/02-database.md) §2.1.
+
+The same holds when a computer changes hands. Reassigning it creates a **new** employee account and
+revokes the previous employee's sessions; it never renames, reuses or deletes their account, and
+their conversations and messages stay exactly where they are.
 
 Phases 1 and 2 ran **no** database or Prisma command of any kind, and no database package is
 installed.

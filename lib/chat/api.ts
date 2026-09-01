@@ -37,7 +37,7 @@ export class ApiError extends Error {
     this.code = code;
   }
 
-  /** True when the session has gone: the interface must return to the name screen. */
+  /** True when this computer no longer resolves to an employee: the workspace must close. */
   get isUnauthenticated(): boolean {
     return this.status === 401;
   }
@@ -81,29 +81,17 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
 /* Session                                                                                       */
 /* ------------------------------------------------------------------------------------------- */
 
-/** Who am I? `null` when this browser has no identity yet — a normal state, not an error. */
+/**
+ * Who am I? `null` when this computer has no assigned identity — a normal state, not an error.
+ *
+ * The only identity call the employee interface makes, and it is read-only. There is no
+ * counterpart that creates, changes or clears an identity, because no such endpoint exists any
+ * more: a computer is assigned to an employee by an administrator
+ * (docs/12-admin-device-identity.md).
+ */
 export async function fetchSession(): Promise<SessionIdentityWire | null> {
   const identity = await request<SessionIdentityWire | undefined>('/api/session');
   return identity ?? null;
-}
-
-/**
- * Enter with a display name.
- *
- * Always produces a NEW user. Entering a name that already exists does not sign you in as that
- * person — names are not unique and are not identifiers (D-02).
- */
-export function createSession(displayName: string): Promise<SessionIdentityWire> {
-  return request<SessionIdentityWire>('/api/session', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ displayName }),
-  });
-}
-
-/** Switch User / Clear Device Identity — revokes the session and the device server-side. */
-export function endSession(): Promise<void> {
-  return request<void>('/api/session', { method: 'DELETE' });
 }
 
 /* ------------------------------------------------------------------------------------------- */

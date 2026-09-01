@@ -56,15 +56,21 @@ Every server-side check exists because of that row.
 - Two opaque 32-byte random tokens — a 24-hour session and a long-lived device identity (D-13).
   Only their SHA-256 hashes are stored, so a database read yields no usable token of either kind.
 - The device identity **is not authentication** and never raises anyone's privileges: it answers
-  only "which `User.id` is this browser", and every authorization check runs exactly as it would
-  without it.
-- Both are revocable server-side. "Leave" revokes the session; "Switch User / Clear Device
-  Identity" revokes both, because a cookie deleted only in the browser still works if it was
-  copied.
+  only "which company computer is this", and every authorization check runs exactly as it would
+  without it. Who that computer belongs to is a separate, administrator-controlled fact
+  ([12-admin-device-identity.md](12-admin-device-identity.md)).
+- **Employees cannot create, change or clear an identity.** The endpoints behind name entry and
+  "Switch user" were removed, not hidden, and a test asserts they stay removed. Revocation is an
+  administrator operation: retiring a computer, or reassigning it, which deletes every session
+  issued for it.
+- Every identity lookup re-checks that the session's device is still assigned to that session's
+  user, so a reassignment takes effect on the next request rather than at the end of a 24-hour
+  window.
 - Cookie flags `HttpOnly` (no JavaScript access, so XSS cannot exfiltrate it), `Secure` in
-  production, `SameSite=Lax`, `Path=/`, explicit `Max-Age`.
+  production, `SameSite=Lax` (`Strict` for the administrator cookie), `Path=/`, explicit expiry.
 - Server-side expiry checked on every use; expired rows swept.
-- Rate limit on `POST /api/session` to blunt automated name-claiming.
+- Rate limiting on `POST /api/admin/session` and `POST /api/enroll` is **Phase 9** and is not in
+  place yet.
 - No identity value is ever accepted from the request body or a socket payload.
 
 ### Authorization (N-04)
@@ -136,9 +142,14 @@ Layered:
 
 | ID | Risk | Severity without auth | Mitigation / status |
 |---|---|---|---|
-| R-01 | **Impersonation at the name screen** — anyone can enter a colleague's name | High | Inherent to the no-password requirement, and **not reduced by any name check**: D-02 allows duplicate display names, so there is deliberately no collision refusal. Remaining mitigations are visibility, not prevention — the UI disambiguates same-named users with a short id and last-seen, and staff must be told that names are self-declared and unverified. **Accepted risk — resolved only by real authentication (D-11 keeps that out of v1).** |
+| R-01 | **Impersonation at the name screen** — anyone can enter a colleague's name | ~~High~~ **Closed** | Inherent to the no-password requirement, and **not reduced by any name check**: D-02 allows duplicate display names, so there is deliberately no collision refusal. Remaining mitigations are visibility, not prevention — the UI disambiguates same-named users with a short id and last-seen, and staff must be told that names are self-declared and unverified. ~~Accepted risk~~ **Closed by admin-assigned identity**
+([12-admin-device-identity.md](12-admin-device-identity.md)): there is no name screen, no endpoint
+that turns a typed name into a `User`, and no employee-facing way to change identity. What remains
+is R-02/R-16 — being at somebody else's assigned computer — not being able to *claim* to be them. |
 | R-02 | Shared/unlocked workstation lets another person use an existing session | High | An explicit "Leave" that revokes the session server-side. The 24-hour **idle** window (D-04) renews while the browser is in use, so a session on a machine someone keeps using does not time out on its own — expiry bounds abandoned sessions, it is not a defence against a person at an unlocked desk. Screen lock remains an organizational control. |
-| R-16 | **Persistent device identity is a long-lived bearer token** (D-13) — whoever holds the browser profile is that user for up to `DEVICE_ID_TTL_DAYS`, with no further check | High | Knowingly accepted as the cost of history continuity across session expiry. It also *extends* R-02: after the session expires, the next person at that desk silently resumes as the previous user. Mitigations are containment, not prevention — a prominent **"Switch User / Clear Device Identity"** control that revokes the `Device` row server-side, a bounded TTL, `HttpOnly`/`Secure`/`SameSite` flags, TLS, and staff guidance that shared machines require Switch User. **The device cookie must never relax any authorization decision.** Resolved properly only by authentication (D-11 defers it). |
+| R-16 | **Persistent device identity is a long-lived bearer token** (D-13) — whoever holds the browser profile is the computer's assigned employee for up to `DEVICE_ID_TTL_DAYS`, with no further check | High | Knowingly accepted as the cost of an identity model with no passwords. It *is* R-02 restated: the person at an assigned desk is that employee. Mitigations are containment, not prevention — a bounded TTL, `HttpOnly`/`Secure`/`SameSite` flags, TLS, **administrator-only retirement and re-enrollment** of a computer whose cookie may have been copied, and the rule that every lookup re-checks the device's current assignment so a reassignment revokes the previous employee at once. Employees can no longer clear or switch identity themselves, which removes the old "Switch User" containment — that control now belongs to the administrator, which is the intent. **The device cookie must never relax any authorization decision.** Resolved properly only by authentication (D-11 defers it). |
+| R-17 | **The administrator token is a single shared secret** guarding the device registry, with no rate limiting and no per-administrator attribution | High | The smallest honest mechanism, stated as such rather than dressed up ([12-admin-device-identity.md](12-admin-device-identity.md) §5). Constant-time comparison; exchanged once for a short-lived signed cookie so the token is not replayed; rotating it invalidates every administrator session; **an unconfigured server refuses all administration rather than allowing it**. Admin access governs the registry only and grants no access to any conversation, message or file. Rate limiting is **Phase 9**; restricting `/admin` and `/api/admin` to an operator network is **Phase 8**; per-administrator accounts and an audit trail come with real authentication. |
+| R-18 | **A setup code is a bearer capability** — whoever holds an unredeemed code can enrol a browser as that computer's assigned employee | Medium | ~98 bits of entropy, stored only as a SHA-256 hash, expiring after `ENROLLMENT_TTL_HOURS`, and cleared inside the transaction that redeems it so it works exactly once. It carries no name and no choice of employee, so it cannot be used to become somebody else — only to complete an assignment an administrator already made. Not rate-limited yet (**Phase 9**). Codes are shown once, to an administrator, and are never recoverable afterwards. |
 | R-03 | Session token theft over the network | High if HTTP | TLS in production; `Secure` cookie. If TLS is not deployed, the whole model degrades — see Q-14. |
 | R-04 | Insider reads conversations they are a member of | Medium | Out of technical scope; membership is the intended boundary. Group membership changes are recorded as `SYSTEM` messages so additions are visible. |
 | R-05 | Enumeration of conversation/message/file ids | Medium | UUIDv4 ids are not enumerable, and authorization is enforced regardless. Hiding a URL is never the control (`CLAUDE.md` §20). |

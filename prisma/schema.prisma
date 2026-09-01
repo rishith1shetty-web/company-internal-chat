@@ -18,11 +18,11 @@
 //     but deleting a user never removes the messages they wrote (docs/02-database.md §4)
 
 generator client {
-  provider = "prisma-client"
+  provider     = "prisma-client"
   // Generated TypeScript, not committed: `prisma generate` reproduces it, and both
   // `npm run build` and `postinstall` run that. The entry point is
   // prisma/generated/client.ts, imported only by lib/db/prisma.ts.
-  output   = "./generated"
+  output       = "./generated"
   // CommonJS output. The custom server (D-09) is compiled by plain `tsc` to CommonJS, and the
   // ESM default emits `import.meta.url`, which cannot be expressed in a CommonJS file — the
   // compiled server then fails to start. Next.js consumes either format happily.
@@ -99,14 +99,23 @@ model User {
   @@index([lastSeenAt])
 }
 
-/// One row per browser that entered a display name. Answers "is this browser currently active?".
+/// One row per browser that is currently signed in. Answers "is this browser currently active?".
 ///
-/// Temporary authentication state that owns no application data (D-14): the foreign key runs
-/// Session → User and never the reverse, so expiring a session can delete exactly one row and
-/// nothing else. Only the SHA-256 hash of the cookie token is stored; the raw token never is.
+/// Temporary authentication state that owns no application data (D-14): the foreign keys run
+/// Session → User and Session → Device and never the reverse, so expiring a session can delete
+/// exactly one row and nothing else. Only the SHA-256 hash of the cookie token is stored; the raw
+/// token never is.
 model Session {
   id         String   @id @default(uuid(4)) @db.Uuid
   userId     String   @db.Uuid
+  /// The company computer this session was issued for (docs/12-admin-device-identity.md).
+  ///
+  /// Not decoration and not diagnostics. Identity is anchored to a device, so a session must be
+  /// traceable back to the device that produced it — otherwise reassigning that computer to a
+  /// new employee cannot revoke the previous employee's still-valid session cookie, and the old
+  /// identity keeps resolving. Nullable so a session outlives a deleted device row rather than
+  /// disappearing with it.
+  deviceId   String?  @db.Uuid
   /// SHA-256 hex digest of the opaque session cookie token.
   tokenHash  String   @unique @db.Char(64)
   createdAt  DateTime @default(now()) @db.Timestamptz(3)
@@ -116,36 +125,74 @@ model Session {
   /// Diagnostics only. See Q-11 before adding a client IP here.
   userAgent  String?  @db.VarChar(255)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([deviceId])
 }
 
-/// The long-lived browser identity that survives session expiry (D-13). Answers "which User does
-/// this browser belong to?".
+/// A company computer known to the system, and the employee currently assigned to it.
 ///
-/// Deliberately a separate table from Session rather than a longer-lived session: the two answer
-/// different questions, have different lifetimes, and are revoked by different user actions.
+/// This is the ONLY way an identity comes into existence (docs/12-admin-device-identity.md).
+/// Employees do not create, choose, change or clear their own identity: an administrator assigns
+/// a computer to a named employee, and the browser on that computer is thereafter recognised as
+/// that `User`. The row therefore answers two questions at once — "which physical machine is
+/// this?" (`label`) and "whose is it right now?" (`userId`).
 ///
-/// Resolution rule: a device resolves ONLY when `revokedAt IS NULL AND expiresAt > now()`.
-/// Checking the row's mere existence is the bug to avoid. This is a convenience mechanism, not
-/// authentication — it grants no privilege and relaxes no authorization check (R-16).
+/// Lifecycle:
+///
+///   assigned    userId set, tokenHash NULL, enrollmentTokenHash set  → awaiting setup
+///   enrolled    tokenHash set, enrollmentTokenHash NULL              → employee is recognised
+///   reassigned  userId points at a NEW User; tokenHash UNCHANGED     → recognised immediately
+///   re-enrolled tokenHash cleared, a fresh enrollment code issued    → awaiting setup again
+///   revoked     revokedAt set                                        → resolves no more
+///
+/// Reassignment repoints `userId` at a newly created `User` and never renames the old one. The
+/// previous employee's `User`, memberships, conversations and messages are untouched (D-14).
+///
+/// Reassignment deliberately does NOT clear `tokenHash`: the computer is already enrolled, and
+/// making an ordinary staff change require somebody to walk to the machine with a code would
+/// push admins towards keeping codes lying around. What it does instead is delete every
+/// `Session` issued for this device, so the previous employee's session cookie stops resolving
+/// at once. Re-enrollment is for a machine whose browser identity was actually lost — a
+/// reimaged PC, cleared site data, a replaced browser profile.
+///
+/// Resolution rule, unchanged from D-13: a device resolves ONLY when `tokenHash IS NOT NULL AND
+/// revokedAt IS NULL AND expiresAt > now()`. Checking the row's mere existence is the bug to
+/// avoid. The device cookie is still a bearer token, not authentication — it grants no privilege
+/// and relaxes no authorization check (R-16).
 model Device {
-  id         String    @id @default(uuid(4)) @db.Uuid
-  userId     String    @db.Uuid
+  id                  String    @id @default(uuid(4)) @db.Uuid
+  /// The currently assigned employee. Repointed by an admin reassignment, never renamed.
+  userId              String    @db.Uuid
+  /// Admin-facing name of the physical computer, e.g. "Reception PC" or "DESK-014". Unique, so
+  /// two machines cannot be confused for one another in the admin list.
+  label               String    @unique @db.VarChar(64)
   /// SHA-256 hex digest of the opaque device cookie token.
-  tokenHash  String    @unique @db.Char(64)
-  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  ///
+  /// NULL until the computer is enrolled, and NULL again after a reassignment: the assignment
+  /// exists before any browser has been handed a cookie for it.
+  tokenHash           String?   @unique @db.Char(64)
+  /// SHA-256 hex digest of the one-time enrollment code. Cleared the moment it is redeemed.
+  enrollmentTokenHash String?   @unique @db.Char(64)
+  enrollmentExpiresAt DateTime? @db.Timestamptz(3)
+  /// When the current assignment was made by an administrator.
+  assignedAt          DateTime  @default(now()) @db.Timestamptz(3)
+  /// When the current assignment was redeemed on the computer itself.
+  enrolledAt          DateTime? @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
   /// now + DEVICE_ID_TTL_DAYS (default 90), renewed on use.
-  expiresAt  DateTime  @db.Timestamptz(3)
-  lastSeenAt DateTime  @default(now()) @db.Timestamptz(3)
-  /// Set server-side by "Switch User". A revoked device never resolves again, so a copied
-  /// cookie is useless — which is why the control cannot be a browser-side cookie deletion.
-  revokedAt  DateTime? @db.Timestamptz(3)
-  userAgent  String?   @db.VarChar(255)
+  expiresAt           DateTime  @db.Timestamptz(3)
+  lastSeenAt          DateTime  @default(now()) @db.Timestamptz(3)
+  /// Set server-side when an administrator retires the computer. A revoked device never resolves
+  /// again, so a copied cookie is useless — which is why this cannot be a browser-side deletion.
+  revokedAt           DateTime? @db.Timestamptz(3)
+  userAgent           String?   @db.VarChar(255)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
 
   @@index([userId])
   @@index([expiresAt])
@@ -220,18 +267,18 @@ model ConversationMember {
 // ---------------------------------------------------------------------------------------------
 
 model Message {
-  id             String      @id @default(uuid(4)) @db.Uuid
-  conversationId String      @db.Uuid
+  id              String      @id @default(uuid(4)) @db.Uuid
+  conversationId  String      @db.Uuid
   /// SET NULL on user delete — never cascade a person's messages away. The UI renders the
   /// author as "Unknown user".
-  senderId       String?     @db.Uuid
-  type           MessageType
+  senderId        String?     @db.Uuid
+  type            MessageType
   /// Required for TEXT, an optional caption for FILE, the rendered text for SYSTEM.
-  body           String?
+  body            String?
   /// Browser-generated idempotency key. Phase 4 uses it so that a send retried after a dropped
   /// acknowledgement collides with the existing row instead of inserting a second message.
-  clientMessageId String     @db.Uuid
-  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
+  clientMessageId String      @db.Uuid
+  createdAt       DateTime    @default(now()) @db.Timestamptz(3)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender       User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)

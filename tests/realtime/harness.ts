@@ -16,7 +16,8 @@ import type { AddressInfo } from 'node:net';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { io as connect, type Socket as ClientSocket } from 'socket.io-client';
 
-import { createIdentity, SESSION_COOKIE, DEVICE_COOKIE } from '@/lib/auth/session';
+import { SESSION_COOKIE, DEVICE_COOKIE } from '@/lib/auth/session';
+import { assignDevice, enrollDevice, type EnrollmentConfig } from '@/lib/devices/service';
 import type { Logger } from '@/lib/logging/logger';
 import { parseDatabaseUrl } from '@/lib/db/target';
 import { createRealtimeGateway, type RealtimeGateway } from '@/lib/realtime/gateway';
@@ -113,22 +114,40 @@ export interface TestIdentity {
   cookie: string;
 }
 
-/** Creates a user with a real session and device, exactly as the entry endpoint would. */
+const ENROLLMENT_CONFIG: EnrollmentConfig = { ...IDENTITY_CONFIG, enrollmentTtlHours: 24 };
+
+let labelCounter = 0;
+
+/**
+ * A company computer assigned to a new employee and enrolled, which is the only way working
+ * cookies come into existence now (docs/12-admin-device-identity.md).
+ */
 export async function createTestIdentity(displayName = 'Person'): Promise<TestIdentity> {
-  const issued = await createIdentity(
+  labelCounter += 1;
+
+  const assignment = await assignDevice(
     testDb(),
-    { displayName: `${TEST_NAME_PREFIX}${displayName}`, userAgent: 'vitest' },
-    IDENTITY_CONFIG,
+    {
+      label: `${TEST_NAME_PREFIX}PC-${labelCounter}-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: `${TEST_NAME_PREFIX}${displayName}`,
+    },
+    ENROLLMENT_CONFIG,
   );
 
-  createdUserIds.add(issued.user.id);
+  createdUserIds.add(assignment.device.assignedUser.id);
+
+  const enrolled = await enrollDevice(
+    testDb(),
+    { code: assignment.enrollmentCode, userAgent: 'vitest' },
+    ENROLLMENT_CONFIG,
+  );
 
   return {
-    userId: issued.user.id,
-    displayName: issued.user.displayName,
-    sessionToken: issued.sessionToken,
-    deviceToken: issued.deviceToken,
-    cookie: cookieHeader(issued.sessionToken, issued.deviceToken),
+    userId: enrolled.user.id,
+    displayName: enrolled.user.displayName,
+    sessionToken: enrolled.sessionToken,
+    deviceToken: enrolled.deviceToken,
+    cookie: cookieHeader(enrolled.sessionToken, enrolled.deviceToken),
   };
 }
 

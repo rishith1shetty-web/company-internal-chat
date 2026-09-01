@@ -15,3 +15,13 @@ try {
 } catch {
   // No .env: tests that need a database skip themselves.
 }
+
+/*
+ * A deterministic ADMIN_TOKEN for the test run.
+ *
+ * The admin surface refuses everything when no token is configured, which is the correct
+ * production default but would make the admin tests skip on a machine that is otherwise
+ * perfectly configured. A value is therefore supplied here when the environment does not have
+ * one — never overriding a real `.env` value, and never written to disk.
+ */
+process.env['ADMIN_TOKEN'] ??= 'zz-test-admin-token-0123456789abcdef';

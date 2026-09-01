@@ -8,15 +8,14 @@ import { DetailsPanel } from '@/components/chat/DetailsPanel';
 import { EmptyChatState } from '@/components/chat/EmptyChatState';
 import { MessageComposer } from '@/components/chat/MessageComposer';
 import { MessageList } from '@/components/chat/MessageList';
-import { NameEntryScreen } from '@/components/chat/NameEntryScreen';
 import { NewChatDialog } from '@/components/chat/NewConversationDialogs';
 import { Sidebar } from '@/components/chat/Sidebar';
 import {
   AttachmentDialog,
   GroupsUnavailableDialog,
   SettingsDialog,
-  SwitchUserDialog,
 } from '@/components/chat/SystemDialogs';
+import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { hasNameCollision } from '@/lib/chat/format';
 import {
@@ -33,7 +32,7 @@ import { useChatSession } from '@/lib/chat/useChatSession';
 import { cn } from '@/lib/ui/cn';
 import { useMediaQuery } from '@/lib/ui/useMediaQuery';
 
-type DialogName = 'new-chat' | 'new-group' | 'attachment' | 'switch-user' | 'settings';
+type DialogName = 'new-chat' | 'new-group' | 'attachment' | 'settings';
 
 /**
  * The application shell: header, conversation sidebar, chat panel and details panel, plus the
@@ -43,9 +42,14 @@ type DialogName = 'new-chat' | 'new-group' | 'attachment' | 'switch-user' | 'set
  * `useChatSession` owns that, and everything below this component is presentational and receives
  * data and callbacks (docs/01-architecture.md §4, "Layer rules").
  *
- * PHASE 5: conversations, messages, presence and identity are real and come from the server.
- * Group creation is Phase 6 and file transfer is Phase 7; both controls are present and say so
- * rather than doing something that only looks like it worked.
+ * Conversations, messages, presence and identity are real and come from the server. Group
+ * creation is Phase 6 and file transfer is Phase 7; both controls are present and say so rather
+ * than doing something that only looks like it worked.
+ *
+ * IDENTITY IS NOT A CONTROL HERE. There is no name entry, no sign-out, no switch-user and no
+ * clear-identity anywhere below this component: the computer is assigned to an employee by an
+ * administrator, and this interface only ever reports who that is
+ * (docs/12-admin-device-identity.md).
  */
 export function ChatWorkspace() {
   const session = useChatSession();
@@ -82,15 +86,6 @@ export function ChatWorkspace() {
     setOpenDialog('new-chat');
   };
 
-  const confirmSwitchUser = async () => {
-    const switched = await session.switchUser();
-    if (!switched) return;
-
-    closeDialog();
-    setDetailsOverride(null);
-    setSidebarOpen(false);
-  };
-
   if (state.screen === 'loading') {
     return (
       <main className="flex min-h-dvh items-center justify-center bg-canvas px-4">
@@ -101,15 +96,10 @@ export function ChatWorkspace() {
     );
   }
 
-  if (state.screen === 'name-entry' || !currentUser) {
-    return (
-      <NameEntryScreen
-        onEnter={session.enter}
-        pending={session.entering}
-        error={state.notice}
-        afterSwitchUser={state.afterSwitchUser}
-      />
-    );
+  // No assigned identity: an explanation, not a form. Nothing on that screen is actionable,
+  // because nothing an employee can do would change it.
+  if (state.screen === 'unassigned' || !currentUser) {
+    return <UnassignedDeviceScreen error={state.notice} />;
   }
 
   const selectConversation = (conversationId: string) => {
@@ -148,8 +138,8 @@ export function ChatWorkspace() {
 
       <AppHeader
         currentUser={currentUserSummary}
+        deviceLabel={currentUser.deviceLabel}
         onToggleSidebar={() => setSidebarOpen((open) => !open)}
-        onSwitchUser={() => setOpenDialog('switch-user')}
         onOpenSettings={() => setOpenDialog('settings')}
       />
 
@@ -269,17 +259,11 @@ export function ChatWorkspace() {
       ) : null}
       <GroupsUnavailableDialog open={openDialog === 'new-group'} onClose={closeDialog} />
       <AttachmentDialog open={openDialog === 'attachment'} onClose={closeDialog} />
-      <SwitchUserDialog
-        open={openDialog === 'switch-user'}
-        currentUser={currentUserSummary}
-        onClose={closeDialog}
-        onConfirm={() => void confirmSwitchUser()}
-      />
       <SettingsDialog
         open={openDialog === 'settings'}
         currentUser={currentUserSummary}
+        deviceLabel={currentUser.deviceLabel}
         onClose={closeDialog}
-        onSwitchUser={() => setOpenDialog('switch-user')}
       />
     </div>
   );

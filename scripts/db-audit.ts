@@ -53,11 +53,33 @@ async function main(): Promise<void> {
       process.stdout.write(`  ${table.padEnd(20)} ${count}\n`);
     }
 
-    const leftovers = await db.user.findMany({
+    const users = await db.user.findMany({
       where: { OR: TEST_PREFIXES.map((prefix) => ({ normalizedName: { startsWith: prefix } })) },
       select: { id: true, displayName: true, createdAt: true },
       take: 50,
     });
+
+    /*
+     * Devices are checked by their own label, not through their assigned employee.
+     *
+     * A reassigned device belongs to a different employee than the one it was created with, so a
+     * device left behind by an interrupted run would not be found by looking at test users — and
+     * an audit that reports "none" while rows remain is worse than no audit at all.
+     */
+    const devices = await db.device.findMany({
+      where: { OR: TEST_PREFIXES.map((prefix) => ({ label: { startsWith: prefix } })) },
+      select: { id: true, label: true, createdAt: true },
+      take: 50,
+    });
+
+    const leftovers = [
+      ...users.map((user) => ({ id: user.id, name: user.displayName, createdAt: user.createdAt })),
+      ...devices.map((device) => ({
+        id: device.id,
+        name: `device "${device.label}"`,
+        createdAt: device.createdAt,
+      })),
+    ];
 
     process.stdout.write('\nTest rows still present\n');
 
@@ -66,8 +88,8 @@ async function main(): Promise<void> {
     } else {
       // Reported, never deleted: removing rows a script merely guessed were test data is exactly
       // the kind of destructive action this project forbids.
-      for (const user of leftovers) {
-        process.stdout.write(`  ${user.id}  ${user.displayName}  ${user.createdAt.toISOString()}\n`);
+      for (const row of leftovers) {
+        process.stdout.write(`  ${row.id}  ${row.name}  ${row.createdAt.toISOString()}\n`);
       }
       process.stdout.write(
         `\n  ${leftovers.length} left behind. Remove them by id if they are not wanted.\n\n`,

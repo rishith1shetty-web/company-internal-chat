@@ -152,7 +152,8 @@ export function createRealtimeGateway(
         );
 
         if (!resolved) {
-          // No usable session or device. The browser must enter a display name first.
+          // No usable session or device: this computer has no assignment, so there is nobody
+          // for the socket to be. Setting that right is an administrator's job.
           logger.debug('Socket handshake rejected: no valid identity');
           next(new Error('UNAUTHENTICATED'));
           return;

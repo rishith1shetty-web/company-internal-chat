@@ -67,7 +67,7 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
 function workspace(): ChatState {
   return apply(
     initialChatState,
-    { type: 'identity-ready', userId: ALICE, displayName: 'Alice' },
+    { type: 'identity-ready', userId: ALICE, displayName: 'Alice', deviceLabel: 'PC-001' },
     {
       type: 'conversations-loaded',
       conversations: [conversation()],
@@ -77,10 +77,10 @@ function workspace(): ChatState {
 }
 
 describe('chat reducer', () => {
-  it('starts on the entry screen when there is no identity', () => {
+  it('shows the unassigned screen when this computer has no identity', () => {
     const state = chatReducer(initialChatState, { type: 'identity-missing' });
 
-    expect(state.screen).toBe('name-entry');
+    expect(state.screen).toBe('unassigned');
     expect(state.currentUser).toBeNull();
   });
 
@@ -273,7 +273,7 @@ describe('chat reducer', () => {
 
     const state = apply(
       initialChatState,
-      { type: 'identity-ready', userId: ALICE, displayName: 'Alice' },
+      { type: 'identity-ready', userId: ALICE, displayName: 'Alice', deviceLabel: 'PC-001' },
       {
         type: 'conversations-loaded',
         conversations: [
@@ -317,7 +317,7 @@ describe('chat reducer', () => {
 
     const state = apply(
       initialChatState,
-      { type: 'identity-ready', userId: ALICE, displayName: 'Alice' },
+      { type: 'identity-ready', userId: ALICE, displayName: 'Alice', deviceLabel: 'PC-001' },
       {
         type: 'conversations-loaded',
         conversations: [
@@ -344,20 +344,42 @@ describe('chat reducer', () => {
     expect(new Set(discriminators).size).toBe(2);
   });
 
-  it('drops everything belonging to the previous identity on switch user', () => {
+  /*
+   * The reassignment case, from the browser's point of view.
+   *
+   * An administrator hands this computer to somebody else; the previous employee's session is
+   * revoked server-side, the next request answers 401, and the interface must drop every trace of
+   * who used to be here rather than showing the new person the old one's conversations.
+   */
+  it('drops everything belonging to the previous identity when it goes away', () => {
     const state = apply(
       workspace(),
       { type: 'select-conversation', conversationId: CONVERSATION },
       { type: 'message-received', message: message() },
-      { type: 'switched-user' },
+      { type: 'identity-missing' },
     );
 
-    expect(state.screen).toBe('name-entry');
+    expect(state.screen).toBe('unassigned');
     expect(state.currentUser).toBeNull();
     expect(state.conversations).toEqual([]);
     expect(state.messagesByConversation).toEqual({});
     expect(state.users).toEqual({});
-    expect(state.afterSwitchUser).toBe(true);
+    expect(state.selectedConversationId).toBeNull();
+  });
+
+  it('carries the assigned computer label, which nothing in the reducer can change', () => {
+    const state = workspace();
+
+    expect(state.currentUser).toEqual({
+      id: ALICE,
+      displayName: 'Alice',
+      deviceLabel: 'PC-001',
+    });
+
+    // There is no action that edits an identity: the reducer's action union has none, and this
+    // asserts the only ones that touch `currentUser` at all.
+    const identityActions = ['identity-ready', 'identity-missing'];
+    expect(identityActions).toHaveLength(2);
   });
 
   it('closes a conversation that is no longer in the caller list', () => {

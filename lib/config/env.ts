@@ -39,6 +39,17 @@ export interface AppConfig {
   sessionTtlHours: number;
   /** Device identity lifetime in days, renewed on use (D-13, Q-19). */
   deviceTtlDays: number;
+  /** How long an unredeemed device enrollment code stays usable. */
+  enrollmentTtlHours: number;
+  /**
+   * The shared administrator token that guards the device-assignment surface, or `undefined`
+   * when none is configured.
+   *
+   * Absent is a valid and deliberately safe state: with no token the admin API and admin page
+   * refuse every request outright rather than falling back to something weaker. See
+   * docs/12-admin-device-identity.md for what this is and, more importantly, what it is not.
+   */
+  adminToken: string | undefined;
   /**
    * Redacted description of the configured database (`role@host:port/company_chat_db`), or
    * `undefined` when no database is configured. Safe to log — it contains no password, and the
@@ -59,6 +70,16 @@ const DEFAULT_BIND_HOST = '127.0.0.1';
 const DEFAULT_SESSION_TTL_HOURS = 24;
 /** Q-19: 90 days, renewed on use. */
 const DEFAULT_DEVICE_TTL_DAYS = 90;
+/** A working day plus slack: long enough to set a machine up, short enough to go stale. */
+const DEFAULT_ENROLLMENT_TTL_HOURS = 24;
+/**
+ * Shortest admin token accepted.
+ *
+ * The token is a bearer secret with no rate limiting in front of it (Phase 9), so a short one is
+ * not a weaker choice by the operator — it is a broken configuration, and the application says so
+ * at startup rather than running with it.
+ */
+const MIN_ADMIN_TOKEN_LENGTH = 24;
 
 export class ConfigError extends Error {
   readonly problems: readonly string[];
@@ -197,6 +218,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     problems,
   );
 
+  const enrollmentTtlHours = parsePositiveInteger(
+    'ENROLLMENT_TTL_HOURS',
+    readOptional(env, 'ENROLLMENT_TTL_HOURS'),
+    DEFAULT_ENROLLMENT_TTL_HOURS,
+    24 * 30,
+    problems,
+  );
+
+  const adminToken = readOptional(env, 'ADMIN_TOKEN');
+  if (adminToken !== undefined && adminToken.length < MIN_ADMIN_TOKEN_LENGTH) {
+    // The value itself is never echoed, here or anywhere else.
+    problems.push(`ADMIN_TOKEN must be at least ${MIN_ADMIN_TOKEN_LENGTH} characters`);
+  }
+
   const databaseTarget = parseDatabaseTarget(readOptional(env, 'DATABASE_URL'), problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
@@ -211,6 +246,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     logLevel,
     sessionTtlHours,
     deviceTtlDays,
+    enrollmentTtlHours,
+    adminToken,
     databaseTarget,
   };
 }

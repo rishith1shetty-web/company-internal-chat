@@ -3,25 +3,30 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { Avatar } from '@/components/ui/Avatar';
-import { SettingsIcon, SwitchUserIcon } from '@/components/ui/icons';
+import { SettingsIcon } from '@/components/ui/icons';
 import { userDiscriminator } from '@/lib/chat/format';
 import type { UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
 
 interface UserMenuProps {
   currentUser: UserSummary;
-  onSwitchUser: () => void;
+  /** The administrator's name for this computer, shown as information only. */
+  deviceLabel: string;
   onOpenSettings: () => void;
 }
 
 /**
- * Current-user area in the application header, with the account controls behind it.
+ * Current-user area in the application header.
  *
  * The identity shown is a display name plus a short discriminator derived from the user id.
  * The discriminator is not decoration: display names are not unique (D-02), so the name alone
  * never establishes which user this is.
+ *
+ * DISPLAY-ONLY. There is no sign-out, no switch-user and no clear-identity item here any more:
+ * an employee cannot change who this computer is (docs/12-admin-device-identity.md). What is left
+ * is Settings, which reports the assignment and changes nothing.
  */
-export function UserMenu({ currentUser, onSwitchUser, onOpenSettings }: UserMenuProps) {
+export function UserMenu({ currentUser, deviceLabel, onOpenSettings }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -86,20 +91,12 @@ export function UserMenu({ currentUser, onSwitchUser, onOpenSettings }: UserMenu
           <div className="border-b border-line px-3 py-2">
             <p className="truncate text-sm font-medium text-ink">{currentUser.displayName}</p>
             <p className="mt-0.5 text-xs text-ink-subtle">
-              Signed in without a password · ID {userDiscriminator(currentUser.id)}
+              ID {userDiscriminator(currentUser.id)} · <span className="break-all">{deviceLabel}</span>
             </p>
           </div>
 
           <MenuItem icon={<SettingsIcon className="h-4 w-4" />} onClick={() => select(onOpenSettings)}>
             Settings
-          </MenuItem>
-
-          <MenuItem
-            icon={<SwitchUserIcon className="h-4 w-4" />}
-            onClick={() => select(onSwitchUser)}
-            description="Use on a shared computer before someone else takes over."
-          >
-            Switch user / clear device identity
           </MenuItem>
         </div>
       ) : null}

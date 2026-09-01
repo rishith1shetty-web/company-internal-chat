@@ -425,6 +425,7 @@ describe.skipIf(!databaseConfigured)('database schema', () => {
       const active = await db().device.create({
         data: {
           userId: user.id,
+          label: `zz-test-active-${crypto.randomUUID().slice(0, 8)}`,
           tokenHash: 'b'.repeat(64),
           expiresAt: new Date(Date.now() + 90 * 86_400_000),
         },
@@ -432,6 +433,7 @@ describe.skipIf(!databaseConfigured)('database schema', () => {
       const revoked = await db().device.create({
         data: {
           userId: user.id,
+          label: `zz-test-revoked-${crypto.randomUUID().slice(0, 8)}`,
           tokenHash: 'c'.repeat(64),
           expiresAt: new Date(Date.now() + 90 * 86_400_000),
           revokedAt: new Date(),

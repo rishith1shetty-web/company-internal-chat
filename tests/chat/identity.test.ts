@@ -1,27 +1,25 @@
 /**
- * Identity and persistence guarantees (D-02, D-11, D-13, D-14).
+ * Identity and persistence guarantees (D-02, D-11, D-13, D-14) under admin-assigned identity.
  *
  * These are the properties the whole application rests on, and they are easy to break by
  * accident in a later phase:
  *
- *   - A display name is a label. Entering the same name twice produces two different people.
- *   - A session is temporary; the data is not. Expiring, revoking or losing a session must never
+ *   - An employee cannot create, choose or clear an identity. There is no endpoint that turns a
+ *     name typed in a browser into a `User`, and this file asserts the absence rather than
+ *     trusting that nobody adds one back.
+ *   - A display name is a label. Two employees may share one and are two different people.
+ *   - A session is temporary; the data is not. Expiring, revoking or reassigning must never
  *     delete a user, a conversation, a membership or a message.
- *   - The device cookie reattaches a browser to the same `User.id` after the session lapses, and
- *     "Switch user" revokes it *server-side* so a copied cookie is worthless.
+ *   - The device cookie reattaches a browser to whoever the computer is assigned to **now**.
  */
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import * as sessionRoute from '@/app/api/session/route';
 import { GET as getSession } from '@/app/api/session/route';
-import {
-  DEVICE_COOKIE,
-  SESSION_COOKIE,
-  createIdentity,
-  resolveIdentity,
-  switchUser,
-} from '@/lib/auth/session';
+import { DEVICE_COOKIE, SESSION_COOKIE, resolveIdentity } from '@/lib/auth/session';
 import { listConversationsForUser } from '@/lib/conversations/service';
+import { revokeDevice } from '@/lib/devices/service';
 import { listMessages, sendMessage } from '@/lib/messages/service';
 import type { SessionIdentityWire } from '@/lib/chat/wire';
 
@@ -41,6 +39,24 @@ import {
 
 const suite = databaseConfigured ? describe : describe.skip;
 
+/**
+ * The employee-facing identity surface, asserted by its absence.
+ *
+ * Not a database test, so it runs everywhere. If somebody adds a POST back to `/api/session` —
+ * or a DELETE, which was "Switch user" — this fails immediately and says why.
+ */
+describe('employee identity surface', () => {
+  it('exposes no endpoint for creating, changing or clearing an identity', () => {
+    expect(typeof sessionRoute.GET).toBe('function');
+
+    const handlers = Object.keys(sessionRoute).filter((key) =>
+      ['POST', 'PUT', 'PATCH', 'DELETE'].includes(key),
+    );
+
+    expect(handlers).toEqual([]);
+  });
+});
+
 suite('identity', () => {
   afterAll(async () => {
     await cleanUp();
@@ -54,7 +70,8 @@ suite('identity', () => {
     expect(first.displayName).toBe(second.displayName);
     expect(first.userId).not.toBe(second.userId);
 
-    // And each cookie resolves to its own user, not to whichever row the name happens to match.
+    // And each computer's cookies resolve to their own employee, not to whichever row the name
+    // happens to match.
     const one = await resolveIdentity(
       db(),
       { sessionToken: first.sessionToken, deviceToken: first.deviceToken },
@@ -86,14 +103,16 @@ suite('identity', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.userId).toBe(me.userId);
+    // And it reports which computer that identity belongs to, read-only.
+    expect(response.body.deviceLabel).toBe(me.deviceLabel);
   });
 
-  it('has no identity at all without cookies', async () => {
+  it('has no identity at all on a computer that was never assigned', async () => {
     const response = await getSession(buildRequest({ url: '/api/session' }));
     expect(response.status).toBe(204);
   });
 
-  it('reattaches a browser to the same user when the session has expired (D-13)', async () => {
+  it('reattaches a browser to the assigned employee when the session has expired (D-13)', async () => {
     const person = await createTestIdentity('Returning Person');
 
     // Age the session past its expiry, exactly as 24 idle hours would.
@@ -109,7 +128,7 @@ suite('identity', () => {
     );
     expect(expiredOnly).toBeNull();
 
-    // With the device cookie the browser is the same person again, on a NEW session.
+    // With the device cookie the browser is the assigned employee again, on a NEW session.
     const reattached = await resolveIdentity(
       db(),
       { sessionToken: person.sessionToken, deviceToken: person.deviceToken },
@@ -118,56 +137,15 @@ suite('identity', () => {
 
     expect(reattached?.current.userId).toBe(person.userId);
     expect(reattached?.renewedSessionToken).toBeDefined();
-    expect(reattached?.current.sessionId).toBeDefined();
+    expect(reattached?.current.deviceId).toBe(person.deviceId);
   });
 
-  it('produces a separate identity after Switch User, and revokes the old one', async () => {
-    const first = await createTestIdentity('Shared Desk One');
+  it('does not let a retired device cookie resolve, even though the row still exists', async () => {
+    const person = await createTestIdentity('Retired Device');
 
-    const resolved = await resolveIdentity(
-      db(),
-      { sessionToken: first.sessionToken, deviceToken: first.deviceToken },
-      IDENTITY_CONFIG,
-    );
-    if (!resolved) throw new Error('identity did not resolve');
+    await revokeDevice(db(), person.deviceId);
 
-    await switchUser(db(), resolved.current);
-
-    // Neither cookie works any more — not the session, and not the device that would otherwise
-    // reattach this browser. A copied cookie is therefore worthless.
-    const afterSwitch = await resolveIdentity(
-      db(),
-      { sessionToken: first.sessionToken, deviceToken: first.deviceToken },
-      IDENTITY_CONFIG,
-    );
-    expect(afterSwitch).toBeNull();
-
-    // The next person entering the same name is a different user.
-    const second = await createIdentity(
-      db(),
-      { displayName: first.displayName },
-      IDENTITY_CONFIG,
-    );
-    // Registered for cleanup through the harness's user set.
-    await db().user.findUnique({ where: { id: second.user.id } });
-    expect(second.user.id).not.toBe(first.userId);
-
-    await db().user.delete({ where: { id: second.user.id } });
-  });
-
-  it('does not let a revoked device cookie resolve, even though the row still exists', async () => {
-    const person = await createTestIdentity('Revoked Device');
-
-    const resolved = await resolveIdentity(
-      db(),
-      { sessionToken: person.sessionToken, deviceToken: person.deviceToken },
-      IDENTITY_CONFIG,
-    );
-    if (!resolved) throw new Error('identity did not resolve');
-
-    await switchUser(db(), resolved.current);
-
-    const device = await db().device.findFirst({ where: { userId: person.userId } });
+    const device = await db().device.findUnique({ where: { id: person.deviceId } });
     // Checking the row merely exists is the bug the schema warns about; `revokedAt` is what
     // decides.
     expect(device).not.toBeNull();
@@ -175,29 +153,48 @@ suite('identity', () => {
 
     const attempt = await resolveIdentity(
       db(),
-      { deviceToken: person.deviceToken },
+      { sessionToken: person.sessionToken, deviceToken: person.deviceToken },
       IDENTITY_CONFIG,
     );
     expect(attempt).toBeNull();
   });
 
-  it('ignores a device cookie belonging to a different user', async () => {
+  it('ignores a device cookie belonging to a different computer', async () => {
     const mine = await createTestIdentity('Cookie Owner');
     const theirs = await createTestIdentity('Cookie Stranger');
 
     const resolved = await resolveIdentity(
       db(),
-      // A device cookie from somebody else must never re-point an active session.
+      // Somebody else's device cookie must never re-point an active session.
       { sessionToken: mine.sessionToken, deviceToken: theirs.deviceToken },
       IDENTITY_CONFIG,
     );
 
     expect(resolved?.current.userId).toBe(mine.userId);
-    expect(resolved?.current.deviceId).toBeNull();
+    expect(resolved?.current.deviceId).toBe(mine.deviceId);
+  });
+
+  it('refuses a session that is not anchored to a computer', async () => {
+    const person = await createTestIdentity('Unanchored');
+
+    // A session row with no device cannot be checked against a current assignment, so it is not
+    // honoured at all. Written directly because nothing in the application can produce one.
+    await db().session.updateMany({
+      where: { userId: person.userId },
+      data: { deviceId: null },
+    });
+
+    const resolved = await resolveIdentity(
+      db(),
+      { sessionToken: person.sessionToken },
+      IDENTITY_CONFIG,
+    );
+
+    expect(resolved).toBeNull();
   });
 
   it('names its cookies as the browser will see them', () => {
-    // A rename here would silently sign everybody out; stated as a test so it cannot happen
+    // A rename here would silently sign every computer out; stated as a test so it cannot happen
     // unnoticed.
     expect(cookieHeader('s', 'd')).toBe(`${SESSION_COOKIE}=s; ${DEVICE_COOKIE}=d`);
   });
@@ -224,7 +221,7 @@ suite('data persistence (D-14)', () => {
     // Expire the session and delete it, which is what a lapse plus a sweep amounts to.
     await db().session.deleteMany({ where: { userId: alice.userId } });
 
-    // The device cookie brings the same user back.
+    // The device cookie brings the same employee back.
     const reattached = await resolveIdentity(
       db(),
       { deviceToken: alice.deviceToken },
@@ -239,9 +236,9 @@ suite('data persistence (D-14)', () => {
     expect(history.messages.map((message) => message.body)).toEqual(['this must survive']);
   });
 
-  it('keeps everything when Switch User revokes the identity', async () => {
-    const alice = await createTestIdentity('Alice Switching');
-    const bob = await createTestIdentity('Bob Switching');
+  it('keeps everything when a computer is retired', async () => {
+    const alice = await createTestIdentity('Alice Retiring');
+    const bob = await createTestIdentity('Bob Retiring');
     const conversationId = await seedDirectConversation(alice.userId, bob.userId);
 
     const message = await sendMessage(db(), {
@@ -251,16 +248,9 @@ suite('data persistence (D-14)', () => {
       clientMessageId: uuid(),
     });
 
-    const resolved = await resolveIdentity(
-      db(),
-      { sessionToken: alice.sessionToken, deviceToken: alice.deviceToken },
-      IDENTITY_CONFIG,
-    );
-    if (!resolved) throw new Error('identity did not resolve');
+    await revokeDevice(db(), alice.deviceId);
 
-    await switchUser(db(), resolved.current);
-
-    // Sessions and devices sit at the leaf of every relationship: revoking one removes one row
+    // Sessions and devices sit at the leaf of every relationship: retiring one changes one row
     // and nothing else.
     expect(await db().user.findUnique({ where: { id: alice.userId } })).not.toBeNull();
     expect(await db().conversation.findUnique({ where: { id: conversationId } })).not.toBeNull();

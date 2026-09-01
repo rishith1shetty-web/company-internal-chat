@@ -14,6 +14,7 @@
 
 import { NextResponse } from 'next/server';
 
+import { ADMIN_COOKIE, issueAdminCookie, verifyAdminCookie, verifyAdminToken } from '@/lib/auth/admin';
 import {
   DEVICE_COOKIE,
   SESSION_COOKIE,
@@ -25,6 +26,7 @@ import {
 } from '@/lib/auth/session';
 import { loadConfig } from '@/lib/config/env';
 import { getDb } from '@/lib/db/prisma';
+import type { EnrollmentConfig } from '@/lib/devices/service';
 import { createLogger, describeError, type Logger } from '@/lib/logging/logger';
 
 const config = loadConfig();
@@ -39,6 +41,15 @@ export const identityConfig: IdentityConfig = {
   sessionTtlHours: config.sessionTtlHours,
   deviceTtlDays: config.deviceTtlDays,
 };
+
+/** Identity lifetimes plus the enrollment-code lifetime, for the device registry. */
+export const enrollmentConfig: EnrollmentConfig = {
+  ...identityConfig,
+  enrollmentTtlHours: config.enrollmentTtlHours,
+};
+
+/** Whether an administrator token is configured at all. Absent means the admin surface is shut. */
+export const adminConfigured = config.adminToken !== undefined;
 
 /**
  * Cookie attributes for both identity cookies.
@@ -56,13 +67,30 @@ export function cookieOptions(expires: Date) {
   };
 }
 
+/**
+ * Attributes for the admin cookie.
+ *
+ * `SameSite=Strict` rather than `Lax`: unlike the employee cookies, nothing ever needs to arrive
+ * at the admin surface by following a link from somewhere else, so the stricter setting costs
+ * nothing and removes a whole class of cross-site request.
+ */
+export function adminCookieOptions(expires: Date) {
+  return {
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure: config.isProduction,
+    path: '/',
+    expires,
+  };
+}
+
 /** The error body every endpoint returns. No stack trace, no path, no SQL, no configuration. */
 export function apiError(status: number, code: string, message: string): NextResponse {
   return NextResponse.json({ error: { code, message } }, { status });
 }
 
 export const unauthenticated = () =>
-  apiError(401, 'UNAUTHENTICATED', 'Enter a display name to use the application.');
+  apiError(401, 'UNAUTHENTICATED', 'This computer is not signed in. Contact IT to have it set up.');
 
 /**
  * Deliberately identical for "not a member" and "no such conversation".
@@ -78,6 +106,22 @@ export const invalidRequest = (message = 'That request was not understood.') =>
 
 export const internalError = () =>
   apiError(500, 'INTERNAL_ERROR', 'Something went wrong. Please try again.');
+
+/**
+ * No ADMIN_TOKEN is configured, so there is no administrator to be.
+ *
+ * 503 rather than 401: the request is not unauthorised, the feature is switched off. Answering
+ * 401 would invite somebody to keep trying a token that could never work.
+ */
+export const adminUnavailable = () =>
+  apiError(
+    503,
+    'ADMIN_NOT_CONFIGURED',
+    'Administration is not configured on this server. Set ADMIN_TOKEN and restart.',
+  );
+
+export const adminUnauthorised = () =>
+  apiError(401, 'ADMIN_UNAUTHORISED', 'Sign in with the administrator token to continue.');
 
 /** Resolves the caller's identity from the request cookies, or null when there is none. */
 export async function authenticate(request: Request): Promise<ResolvedIdentity | null> {
@@ -140,6 +184,58 @@ export async function withIdentity(
       userId: resolved.current.userId,
       ...describeError(error),
     });
+    return internalError();
+  }
+}
+
+/**
+ * Exchanges a submitted administrator token for a signed, short-lived cookie.
+ *
+ * Returns null both when nothing is configured and when the token is wrong, and the caller
+ * distinguishes the two — the configured token itself never leaves this module.
+ */
+export function startAdminSession(submitted: unknown): { value: string; expiresAt: Date } | null {
+  if (config.adminToken === undefined) return null;
+  if (!verifyAdminToken(config.adminToken, submitted)) return null;
+  return issueAdminCookie(config.adminToken);
+}
+
+/**
+ * Is this request carrying a valid administrator cookie?
+ *
+ * Separate from `withAdmin` because the "am I signed in?" probe is not a refused request — it is
+ * a question with a legitimate "no" answer, exactly like `GET /api/session` for an employee. A
+ * 401 there would be logged by the browser as a failed request on every visit to the admin page.
+ */
+export function adminSessionState(request: Request): 'unconfigured' | 'signed-in' | 'signed-out' {
+  if (config.adminToken === undefined) return 'unconfigured';
+
+  const cookies = parseCookieHeader(request.headers.get('cookie'));
+  return verifyAdminCookie(config.adminToken, cookies[ADMIN_COOKIE]) ? 'signed-in' : 'signed-out';
+}
+
+/**
+ * The standard shape of an ADMIN route.
+ *
+ * Deliberately a separate preamble from `withIdentity`, and deliberately not composed with it:
+ * an administrator is not an employee identity, holds no `User.id`, and must not be able to act
+ * as one. There is no path through this function that produces a `CurrentUser`.
+ */
+export async function withAdmin(
+  request: Request,
+  handler: () => Promise<NextResponse>,
+): Promise<NextResponse> {
+  if (config.adminToken === undefined) return adminUnavailable();
+
+  const cookies = parseCookieHeader(request.headers.get('cookie'));
+  if (!verifyAdminCookie(config.adminToken, cookies[ADMIN_COOKIE])) {
+    return adminUnauthorised();
+  }
+
+  try {
+    return await handler();
+  } catch (error) {
+    routeLogger.error('Unhandled admin route failure', describeError(error));
     return internalError();
   }
 }

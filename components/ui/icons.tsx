@@ -112,15 +112,6 @@ export function SettingsIcon(props: IconProps) {
   );
 }
 
-export function SwitchUserIcon(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <circle cx="12" cy="8" r="3.2" />
-      <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
-      <path d="M3 5.5h4M5 3.5l-2 2 2 2" />
-    </Svg>
-  );
-}
 
 export function CheckIcon(props: IconProps) {
   return (

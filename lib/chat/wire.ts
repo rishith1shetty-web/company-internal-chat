@@ -88,10 +88,17 @@ export interface ApiErrorWire {
   error: { code: string; message: string };
 }
 
-/** Who the caller is, from `GET /api/session`. */
+/**
+ * Who the caller is, from `GET /api/session`.
+ *
+ * All three fields are server-decided. `deviceLabel` is the administrator's name for the computer
+ * this identity is assigned to, shown read-only so an employee can tell IT which machine they are
+ * at — it is information, not a control.
+ */
 export interface SessionIdentityWire {
   userId: string;
   displayName: string;
+  deviceLabel: string;
 }
 
 /**

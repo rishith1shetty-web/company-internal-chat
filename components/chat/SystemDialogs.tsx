@@ -112,75 +112,27 @@ export function GroupsUnavailableDialog({
 }
 
 /**
- * "Switch User / Clear Device Identity" confirmation (F-19).
- *
- * The wording is deliberate about what this control is for — a shared or hot-desk computer —
- * and about the consequence: the next person becomes a separate user and does not inherit this
- * one's conversations.
- */
-export function SwitchUserDialog({
-  open,
-  currentUser,
-  onClose,
-  onConfirm,
-}: {
-  open: boolean;
-  currentUser: UserSummary;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <Modal
-      open={open}
-      title="Switch user on this computer?"
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="danger" onClick={onConfirm}>
-            Switch user
-          </Button>
-        </>
-      }
-    >
-      <p className="text-sm text-ink-muted">
-        You are currently signed in as{' '}
-        <span className="font-medium text-ink">{currentUser.displayName}</span> (ID{' '}
-        {userDiscriminator(currentUser.id)}). Switching returns this browser to the name screen so
-        the next person can enter their own name.
-      </p>
-
-      <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm text-ink-muted">
-        <li>The next person becomes a separate user with their own conversations.</li>
-        <li>Your conversation history is not deleted — it stays with your identity.</li>
-        <li>Use this whenever someone else takes over a shared computer.</li>
-      </ul>
-
-      <p className="mt-4 rounded-md bg-surface-muted px-3 py-2 text-xs text-ink-subtle">
-        This revokes the session and the device identity on the server, not only in this browser,
-        so a copied cookie cannot be used to return as you.
-      </p>
-    </Modal>
-  );
-}
-
-/**
  * Settings.
  *
- * There are no preferences to change yet, and inventing switches that do nothing would be worse
- * than an honest empty state (CLAUDE.md §12). What it does provide is the account information a
- * user may actually need — which identity they are using — and the switch-user route.
+ * READ-ONLY, and now read-only about identity in particular. There are no preferences to change
+ * yet, and inventing switches that do nothing would be worse than an honest empty state
+ * (CLAUDE.md §12). What it provides is the account information an employee may actually need —
+ * which identity they are using and which computer it belongs to — so they can tell IT exactly
+ * what to look at.
+ *
+ * The "switch user" section that used to live here is gone: changing who this computer is
+ * assigned to is an administrator's operation (docs/12-admin-device-identity.md).
  */
 export function SettingsDialog({
   open,
   currentUser,
+  deviceLabel,
   onClose,
-  onSwitchUser,
 }: {
   open: boolean;
   currentUser: UserSummary;
+  deviceLabel: string;
   onClose: () => void;
-  onSwitchUser: () => void;
 }) {
   return (
     <Modal
@@ -196,7 +148,8 @@ export function SettingsDialog({
       <dl className="divide-y divide-line text-sm">
         <SettingRow label="Display name">{currentUser.displayName}</SettingRow>
         <SettingRow label="Your ID">{userDiscriminator(currentUser.id)}</SettingRow>
-        <SettingRow label="Sign-in">No password — display name only</SettingRow>
+        <SettingRow label="This computer">{deviceLabel}</SettingRow>
+        <SettingRow label="Sign-in">Assigned to this computer by IT</SettingRow>
         <SettingRow label="Conversations">One-to-one (groups arrive in a later phase)</SettingRow>
         <SettingRow label="Availability">
           Everyone on the company network who can reach this application
@@ -204,21 +157,13 @@ export function SettingsDialog({
       </dl>
 
       <div className="mt-5 rounded-md border border-line bg-surface-muted p-3">
-        <p className="text-sm font-medium text-ink">Shared computer?</p>
+        <p className="text-sm font-medium text-ink">Someone else using this computer?</p>
         <p className="mt-1 text-sm text-ink-muted">
-          Switch user before someone else takes over, so their messages are not sent under your
-          name.
+          Messages sent from here are sent as{' '}
+          <span className="font-medium text-ink">{currentUser.displayName}</span>. If this
+          computer has changed hands, ask IT to reassign it — there is nothing to switch here, and
+          nothing you do can send a message under somebody else&apos;s name.
         </p>
-        <Button
-          size="sm"
-          className="mt-3"
-          onClick={() => {
-            onClose();
-            onSwitchUser();
-          }}
-        >
-          Switch user / clear device identity
-        </Button>
       </div>
 
       <p className="mt-4 text-xs text-ink-subtle">

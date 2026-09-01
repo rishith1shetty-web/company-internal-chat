@@ -24,12 +24,12 @@ import type { AddressInfo } from 'node:net';
 import type { NextResponse } from 'next/server';
 import { io as connect, type Socket as ClientSocket } from 'socket.io-client';
 
+import { DEVICE_COOKIE, SESSION_COOKIE, type IdentityConfig } from '@/lib/auth/session';
 import {
-  DEVICE_COOKIE,
-  SESSION_COOKIE,
-  createIdentity,
-  type IdentityConfig,
-} from '@/lib/auth/session';
+  assignDevice,
+  enrollDevice,
+  type EnrollmentConfig,
+} from '@/lib/devices/service';
 import { SOCKET_PATH } from '@/lib/chat/wire';
 import type {
   Ack,
@@ -53,10 +53,23 @@ export const TEST_PRESENCE_GRACE_MS = 150;
 
 export const IDENTITY_CONFIG: IdentityConfig = { sessionTtlHours: 24, deviceTtlDays: 90 };
 
+export const ENROLLMENT_CONFIG: EnrollmentConfig = {
+  ...IDENTITY_CONFIG,
+  enrollmentTtlHours: 24,
+};
+
 export type TestClient = ClientSocket<ServerToClientEvents, ClientToServerEvents>;
 
 const createdUserIds = new Set<string>();
 const createdConversationIds = new Set<string>();
+/*
+ * Devices are tracked separately from users, not derived from them.
+ *
+ * After a reassignment a device belongs to the NEW employee, so deleting the original user would
+ * leave the device behind — which is exactly the row a reassignment test creates. Cleanup deletes
+ * devices by their own id for that reason.
+ */
+const createdDeviceIds = new Set<string>();
 
 /**
  * The application's own Prisma client.
@@ -76,28 +89,67 @@ export function silentLogger(): Logger {
 export interface TestIdentity {
   userId: string;
   displayName: string;
+  deviceId: string;
+  deviceLabel: string;
   sessionToken: string;
   deviceToken: string;
   /** The Cookie header a browser would send. */
   cookie: string;
 }
 
-/** Creates a user with a real session and device, exactly as `POST /api/session` would. */
-export async function createTestIdentity(displayName = 'Person'): Promise<TestIdentity> {
-  const issued = await createIdentity(
+/** Labels must be unique across devices, so every test computer gets its own suffix. */
+let labelCounter = 0;
+
+export function testDeviceLabel(hint = 'PC'): string {
+  labelCounter += 1;
+  return `${TEST_NAME_PREFIX}${hint}-${labelCounter}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+/** Registers a computer to a new employee, exactly as the admin console would. */
+export async function assignTestDevice(
+  displayName = 'Person',
+): Promise<{ deviceId: string; userId: string; label: string; enrollmentCode: string }> {
+  const label = testDeviceLabel();
+  const assignment = await assignDevice(
     db(),
-    { displayName: `${TEST_NAME_PREFIX}${displayName}`, userAgent: 'vitest' },
-    IDENTITY_CONFIG,
+    { label, displayName: `${TEST_NAME_PREFIX}${displayName}` },
+    ENROLLMENT_CONFIG,
   );
 
-  createdUserIds.add(issued.user.id);
+  createdDeviceIds.add(assignment.device.id);
+  createdUserIds.add(assignment.device.assignedUser.id);
 
   return {
-    userId: issued.user.id,
-    displayName: issued.user.displayName,
-    sessionToken: issued.sessionToken,
-    deviceToken: issued.deviceToken,
-    cookie: cookieHeader(issued.sessionToken, issued.deviceToken),
+    deviceId: assignment.device.id,
+    userId: assignment.device.assignedUser.id,
+    label: assignment.device.label,
+    enrollmentCode: assignment.enrollmentCode,
+  };
+}
+
+/**
+ * A fully set-up company computer: assigned by an administrator, then enrolled on the machine.
+ *
+ * This is the only way a test can obtain working cookies, which is the point — it is the only way
+ * the application can produce them either. There is no path from a display name to an identity.
+ */
+export async function createTestIdentity(displayName = 'Person'): Promise<TestIdentity> {
+  const assigned = await assignTestDevice(displayName);
+
+  const enrolled = await enrollDevice(
+    db(),
+    { code: assigned.enrollmentCode, userAgent: 'vitest' },
+    ENROLLMENT_CONFIG,
+  );
+
+  return {
+    userId: enrolled.user.id,
+    displayName: enrolled.user.displayName,
+    deviceId: enrolled.deviceId,
+    deviceLabel: enrolled.label,
+    sessionToken: enrolled.sessionToken,
+    deviceToken: enrolled.deviceToken,
+    cookie: cookieHeader(enrolled.sessionToken, enrolled.deviceToken),
   };
 }
 
@@ -117,6 +169,11 @@ export function trackConversation(conversationId: string): string {
 export function trackUser(userId: string): string {
   createdUserIds.add(userId);
   return userId;
+}
+
+export function trackDevice(deviceId: string): string {
+  createdDeviceIds.add(deviceId);
+  return deviceId;
 }
 
 /** Creates a direct conversation directly, for tests that need one to already exist. */
@@ -388,8 +445,12 @@ export async function waitFor(
  */
 export async function cleanUp(): Promise<void> {
   await db().conversation.deleteMany({ where: { id: { in: [...createdConversationIds] } } });
+  // Devices before users: a reassigned device no longer belongs to the user that created it, so
+  // the cascade from `User` would not reach it.
+  await db().device.deleteMany({ where: { id: { in: [...createdDeviceIds] } } });
   await db().user.deleteMany({ where: { id: { in: [...createdUserIds] } } });
   createdConversationIds.clear();
+  createdDeviceIds.clear();
   createdUserIds.clear();
 }
 

@@ -99,19 +99,28 @@ possibly `email`) to this table. Nothing else in the schema needs to change — 
 keeping identity in its own entity rather than denormalising names onto messages.
 
 ### Session
-One row per browser that entered a display name.
+One row per browser that is currently signed in.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
 | `userId` | uuid FK → User | `ON DELETE CASCADE` |
+| `deviceId` | uuid FK → Device NULL | `ON DELETE SET NULL`; **the computer this session was issued for** |
 | `tokenHash` | char(64) UNIQUE | SHA-256 of the opaque cookie token; **the raw token is never stored** |
 | `createdAt` | timestamptz | |
 | `expiresAt` | timestamptz | explicit expiry, enforced on every lookup; **slid forward on activity** |
 | `lastSeenAt` | timestamptz | |
 | `userAgent` | varchar(255) NULL | diagnostics only; see Q-11 before adding client IP |
 
-Indexes: unique `tokenHash`; index `(userId)`; index `(expiresAt)` for the cleanup sweep.
+Indexes: unique `tokenHash`; index `(userId)`; index `(expiresAt)` for the cleanup sweep; index
+`(deviceId)`.
+
+**`deviceId` is not diagnostics.** Identity is anchored to a company computer
+([docs/12-admin-device-identity.md](12-admin-device-identity.md)), so a session must be traceable
+back to the machine that produced it — otherwise reassigning that computer to a new employee cannot
+revoke the previous employee's still-valid session cookie. Every lookup re-checks that the session's
+device is still assigned to that session's user, so a reassignment takes effect at once. A session
+with no `deviceId` cannot be checked this way and is **not honoured at all**.
 
 **Session lifetime (D-04):** `expiresAt = now + SESSION_TTL_HOURS`, initially **24 hours**,
 renewed while the user is active. The renewal write is throttled (extended at most once per few
@@ -121,32 +130,51 @@ Expiry affects only the user's temporary identity — the application service ke
 
 ### Device (D-13)
 
-The long-lived browser identity that survives session expiry. One row per browser profile.
+**A company computer known to the system, and the employee currently assigned to it.** This is the
+only way an identity comes into existence — employees do not create, choose, change or clear their
+own ([docs/12-admin-device-identity.md](12-admin-device-identity.md)).
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
-| `userId` | uuid FK → User | `ON DELETE CASCADE` |
-| `tokenHash` | char(64) UNIQUE | SHA-256 of the opaque device cookie token; **the raw token is never stored** |
+| `userId` | uuid FK → User | `ON DELETE CASCADE`; the currently assigned employee |
+| `label` | varchar(64) UNIQUE | the administrator's name for the machine, e.g. `PC-001`; renameable, and never an identifier |
+| `tokenHash` | char(64) UNIQUE NULL | SHA-256 of the device cookie token; **NULL until enrolled** |
+| `enrollmentTokenHash` | char(64) UNIQUE NULL | SHA-256 of the one-time setup code; cleared on redemption |
+| `enrollmentExpiresAt` | timestamptz NULL | when an outstanding setup code stops working |
+| `assignedAt` | timestamptz | when the current assignment was made |
+| `enrolledAt` | timestamptz NULL | when it was redeemed on the machine |
 | `createdAt` | timestamptz | |
 | `expiresAt` | timestamptz | `now + DEVICE_ID_TTL_DAYS` (default 90), renewed on use |
 | `lastSeenAt` | timestamptz | |
-| `revokedAt` | timestamptz NULL | set by "Switch User"; a revoked device never resolves again |
+| `revokedAt` | timestamptz NULL | set when an administrator takes the computer out of service; cleared when it is returned to service |
 | `userAgent` | varchar(255) NULL | diagnostics only |
 
-Indexes: unique `tokenHash`; index `(userId)`; index `(expiresAt)` for the sweep.
+Indexes: unique `tokenHash`; unique `label`; unique `enrollmentTokenHash`; index `(userId)`; index
+`(expiresAt)` for the sweep.
 
 Deliberately a **separate table from `Session`**, not a longer-lived session: the two answer
-different questions ("is this browser active?" versus "whose browser is this?"), have different
-lifetimes, and are revoked by different user actions. Collapsing them would mean either sessions
-that never expire or an identity that vanishes daily.
+different questions ("is this browser active?" versus "which computer is this, and whose is it?"),
+have different lifetimes, and are revoked by different operations. Collapsing them would mean either
+sessions that never expire or an identity that vanishes daily.
 
-A `User` may have several `Device` rows — one per browser profile they have used. A `Device` maps
-to exactly one `User` and is never transferred: "Switch User" revokes the row and the next entry
-creates a new `User`, rather than repointing an existing device at someone else.
+**A device is transferred, and that is the point.** Reassigning a computer repoints `userId` at a
+**newly created** `User` and deletes every `Session` for that device. The previous employee is never
+renamed, deactivated or deleted, and their conversations, memberships and messages are untouched
+(§2.1). `tokenHash` is left alone, so the computer stays enrolled and the next request from that
+browser is the new employee.
 
-**Resolution rule:** a device resolves only when `revokedAt IS NULL AND expiresAt > now()`. As with
-`ConversationMember.leftAt`, checking the row's mere existence is the bug to avoid.
+**Resolution rule:** a device resolves only when `tokenHash IS NOT NULL AND revokedAt IS NULL AND
+expiresAt > now()`. As with `ConversationMember.leftAt`, checking the row's mere existence is the
+bug to avoid.
+
+**Setup codes** are stored only as a SHA-256 hash, expire after `ENROLLMENT_TTL_HOURS`, and are
+cleared inside the transaction that redeems them, so a code works exactly once.
+
+**Out of service is reversible; the cookie is not.** Returning a computer to service clears
+`revokedAt`, refreshes `expiresAt` and issues a new setup code, all on the same row — same `id`,
+same `label`, same `userId`. `tokenHash` stays null, so the destroyed device cookie is never
+resurrected and the machine is enrolled once more.
 
 ### Conversation
 
@@ -284,7 +312,8 @@ This is structural rather than procedural:
 |---|---|
 | Expiring a session deletes no user | The FK is `Session.userId → User`. There is no FK from `User` to `Session`, so no cascade can run in that direction |
 | Expiring a session deletes no messages | `Message` has no relationship to `Session` at all |
-| Revoking a device deletes nothing but the device | Same shape as `Session`; nothing references `Device` |
+| Revoking a device deletes nothing but the device | Same shape as `Session`; the only thing referencing `Device` is `Session.deviceId`, which is `ON DELETE SET NULL` |
+| Reassigning a computer deletes no employee and no history | It updates `Device.userId` and deletes that device's `Session` rows. `User`, `Conversation`, `ConversationMember`, `Message` and `Attachment` are not touched |
 | Even deleting a `User` preserves content | `Message.senderId` and `Attachment.uploaderId` are `ON DELETE SET NULL` |
 | The cleanup sweep cannot over-reach | It issues `DELETE FROM "Session" WHERE "expiresAt" < now()` and the equivalent for `Device`. Those two tables are the only ones any sweep touches |
 
@@ -307,7 +336,8 @@ Two boundaries on this guarantee, stated so it is not read as more than it is:
 
 ```text
 User 1 ────< Session          (temporary; leaf, owns nothing)
-User 1 ────< Device           (long-lived browser identity; leaf, owns nothing)
+User 1 ────< Device           (assigned company computer; leaf, owns nothing)
+Device 1 ──< Session          (which computer issued this session; SET NULL, never cascade)
 User 1 ────< ConversationMember >──── 1 Conversation
 User 1 ────< Message            >──── 1 Conversation
 User 1 ────< Attachment         >──── 1 Conversation
@@ -323,6 +353,7 @@ one-to-many change with no other schema impact, if it is ever wanted.
 |---|---|---|
 | Session → User | CASCADE | sessions are worthless without their user; **the reverse direction does not exist** |
 | Device → User | CASCADE | same shape as Session; deleting a device deletes only that row |
+| Session → Device | SET NULL | deleting a computer must not silently delete session history; reassignment removes those rows explicitly |
 | ConversationMember → Conversation | CASCADE | membership belongs to the conversation |
 | ConversationMember → User | CASCADE | membership belongs to the user |
 | Message → Conversation | CASCADE | deleting a conversation deletes its messages, deliberately |
