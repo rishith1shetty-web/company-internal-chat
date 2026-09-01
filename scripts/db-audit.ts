@@ -20,7 +20,16 @@ import { PrismaClient } from '../prisma/generated/client';
  * The list must stay complete. An audit that only knows some of the prefixes reports "none" while
  * rows are still there, which is worse than not auditing at all.
  */
-const TEST_PREFIXES = ['zz-test-', 'zz-rt-', 'zz-test-p5-', 'zz-e2e-', 'zz-ui-'];
+const TEST_PREFIXES = [
+  'zz-test-',
+  'zz-rt-',
+  'zz-test-p5-',
+  'zz-e2e-',
+  'zz-ui-',
+  // Phase 6: the group browser regression and the connection-pool measurement.
+  'zz-gui-',
+  'zz-pool-',
+];
 
 async function main(): Promise<void> {
   try {

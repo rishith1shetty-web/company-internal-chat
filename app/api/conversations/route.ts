@@ -10,8 +10,9 @@
  * reads from the caller's own membership rows, so there is no moment at which a conversation the
  * caller is not in has been loaded and is waiting to be filtered out.
  *
- * PHASE 5: `POST` accepts `type: "DIRECT"` only. Group creation is Phase 6 and is refused here
- * rather than half-implemented.
+ * `POST` accepts `type: "DIRECT"` and, from Phase 6, `type: "GROUP"`. Neither shape lets the
+ * caller say who *they* are: the creator is taken from the session, is always a member, and is
+ * always the owner of a group they create.
  */
 
 import { NextResponse } from 'next/server';
@@ -20,6 +21,9 @@ import { z } from 'zod';
 import type { ConversationCreatedWire, ConversationListWire } from '@/lib/chat/wire';
 import {
   ConversationError,
+  MAX_GROUP_MEMBERS,
+  MAX_GROUP_NAME_LENGTH,
+  createGroupConversation,
   listConversationsForUser,
   resolveDirectConversation,
 } from '@/lib/conversations/service';
@@ -32,6 +36,7 @@ import {
   withIdentity,
 } from '@/lib/http/route-helpers';
 import { memberIdsOf, toConversationWire, toUserWire } from '@/lib/http/serialize';
+import { notifyConversationChanged } from '@/lib/realtime/notify';
 import { listUsersByIds } from '@/lib/users/directory';
 
 export const dynamic = 'force-dynamic';
@@ -52,28 +57,59 @@ export async function GET(request: Request): Promise<NextResponse> {
   });
 }
 
+const uuid = z.uuid({ version: 'v4' });
+
 /**
- * The only thing a browser may supply: which colleague to talk to.
+ * What a browser may supply.
  *
- * There is no `conversationId`, no member list, no `createdById` and no `role` — the caller is
- * always one of the two members and always a `MEMBER`, decided server-side. `type` is present so
- * the Phase 6 group case has somewhere to go, and is rejected until then.
+ * For a direct conversation: which colleague to talk to. For a group: a name and the other people
+ * to add, by id. In neither case is there a `conversationId`, a `createdById`, a `role` or a
+ * `joinedAt` — the caller is always a member of what they create, is always the `OWNER` of a group
+ * they create, and every one of those facts is decided from the session rather than the payload
+ * (CLAUDE.md §9).
+ *
+ * Members are named by id and never by display name: two colleagues may share a name (D-02), so a
+ * name could not identify which was meant even if the API accepted one.
  */
-const createConversationSchema = z.object({
-  type: z.literal('DIRECT'),
-  userId: z.uuid({ version: 'v4' }),
-});
+const createConversationSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('DIRECT'),
+    userId: uuid,
+  }),
+  z.object({
+    type: z.literal('GROUP'),
+    name: z.string().min(1).max(MAX_GROUP_NAME_LENGTH),
+    /** The service re-validates and collapses duplicates; this bounds the request. */
+    memberIds: z.array(uuid).min(1).max(MAX_GROUP_MEMBERS),
+  }),
+]);
+
+/** Maps a conversation failure onto a status and a message the caller can act on. */
+function conversationFailure(error: ConversationError): NextResponse {
+  switch (error.reason) {
+    case 'SELF_CONVERSATION':
+    case 'USER_NOT_FOUND':
+    case 'INVALID_GROUP_NAME':
+    case 'NO_MEMBERS':
+    case 'TOO_MANY_MEMBERS':
+      return apiError(400, 'INVALID_REQUEST', error.message);
+    case 'NOT_A_MEMBER':
+      return apiError(403, 'FORBIDDEN', error.message);
+    default:
+      return apiError(400, 'INVALID_REQUEST', error.message);
+  }
+}
 
 export async function POST(request: Request): Promise<NextResponse> {
   return withIdentity(request, async (current) => {
     const parsed = createConversationSchema.safeParse(await readJsonBody(request));
 
     if (!parsed.success) {
-      const wrongType = parsed.error.issues.some((issue) => issue.path[0] === 'type');
+      const badName = parsed.error.issues.some((issue) => issue.path[0] === 'name');
       return invalidRequest(
-        wrongType
-          ? 'Group conversations are not available yet.'
-          : 'Choose a colleague to start a conversation with.',
+        badName
+          ? `Give the group a name of at most ${MAX_GROUP_NAME_LENGTH} characters.`
+          : 'Choose who to start a conversation with.',
       );
     }
 
@@ -81,19 +117,31 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     let resolved: { conversationId: string; created: boolean };
     try {
-      resolved = await resolveDirectConversation(db, current.userId, parsed.data.userId);
-    } catch (error) {
-      if (error instanceof ConversationError) {
-        switch (error.reason) {
-          case 'SELF_CONVERSATION':
-          case 'USER_NOT_FOUND':
-            return apiError(400, 'INVALID_REQUEST', error.message);
-          case 'NOT_A_MEMBER':
-            return apiError(403, 'FORBIDDEN', error.message);
-          default:
-            break;
-        }
+      if (parsed.data.type === 'GROUP') {
+        const group = await createGroupConversation(db, {
+          // From the session. The browser cannot nominate a creator, a member list that omits
+          // itself, or an owner.
+          creatorId: current.userId,
+          name: parsed.data.name,
+          memberIds: parsed.data.memberIds,
+        });
+
+        /*
+         * The members are told after the transaction committed, never before: the notification
+         * makes their browsers re-read, and a browser that read before the commit would be told
+         * about a group that does not exist yet.
+         */
+        notifyConversationChanged({
+          conversationId: group.conversationId,
+          memberIds: group.memberIds,
+        });
+
+        resolved = { conversationId: group.conversationId, created: true };
+      } else {
+        resolved = await resolveDirectConversation(db, current.userId, parsed.data.userId);
       }
+    } catch (error) {
+      if (error instanceof ConversationError) return conversationFailure(error);
       throw error;
     }
 

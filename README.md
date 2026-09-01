@@ -3,14 +3,19 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 5 complete — working one-to-one chat, with admin-assigned identity.**
+**Current status: Phase 6 complete — one-to-one and group chat, with admin-assigned identity.**
 An administrator assigns each company computer to a named employee; whoever sits at it opens the
 application and is already recognised, with nothing to sign in to and no way to change who they
-are. Colleagues find each other and hold private conversations that are delivered in real time and
-stored in PostgreSQL. Messages, conversations and read state survive a refresh, a reconnection,
-session expiry and a restart. Group chat, file transfer and network restriction follow in
-Phases 6–8; both of those controls are present in the interface and say so rather than appearing to
-work.
+are. Colleagues find each other, hold private conversations, and create named groups — all
+delivered in real time and stored in PostgreSQL. Messages, conversations, membership and read
+state survive a refresh, a reconnection, session expiry and a restart.
+
+Somebody added to a group sees it from the moment they join, and not what was said before. Nothing
+is deleted to achieve that: the earlier messages stay exactly where they are, readable by the
+members who were there for them.
+
+File transfer and network restriction follow in Phases 7–8; the attachment control is present in
+the interface and says so rather than appearing to work.
 
 ## Scope of version 1
 
@@ -36,6 +41,17 @@ deferred to Phase 11 and must not appear before then.
    name. The new employee gets their own account and their own history; the previous employee's is
    kept and is not transferred. Nobody needs to visit the machine.
 
+### Using a group
+
+Press **New group**, name it, and choose colleagues. You become its owner. Any member may add
+somebody later from **Add people** in the conversation details; only the owner can remove somebody
+else, and anybody can leave.
+
+People added later see the group from the moment they join. The conversation that came before
+stays with the members who were there for it — it is not shown to them, and it is not deleted. The
+interface says so before you add anybody, because it is easier to explain beforehand than
+afterwards.
+
 ## Documentation
 
 | Document | Contents |
@@ -54,6 +70,7 @@ deferred to Phase 11 and must not appear before then.
 | [docs/10-phase-4-realtime.md](docs/10-phase-4-realtime.md) | **Real-time layer: Socket.IO architecture, identity, event contract, rooms, message flow, presence, tests** |
 | [docs/11-phase-5-direct-chat.md](docs/11-phase-5-direct-chat.md) | **One-to-one chat: REST endpoints, directory, conversation resolution, history pagination, unread counts, reconnection, tests** |
 | [docs/12-admin-device-identity.md](docs/12-admin-device-identity.md) | **Admin-assigned identity: the device registry, setup codes, assignment and reassignment flows, admin access and its limits** |
+| [docs/13-phase-6-group-chat.md](docs/13-phase-6-group-chat.md) | **Group chat: creation, membership, roles, the join-bounded history window and where its timestamp comes from, real-time membership changes, tests** |
 
 ## Stack
 

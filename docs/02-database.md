@@ -226,6 +226,12 @@ schema and every query built on it:
 - Message queries filter on it. File downloads filter on it too, via the attachment's message —
   otherwise history is retrievable by file id. Conversation previews and unread counts are
   computed inside the same window.
+- `joinedAt` is written from a timestamp PostgreSQL produced, never from the application clock
+  and never from a raw `SELECT now()`. Group operations write their `SYSTEM` message first, let
+  the column default stamp it, and reuse that value — so the join time and the message times it
+  is compared against come from one clock, and a new member's window admits the event announcing
+  them and nothing earlier. Both alternatives were tried and both widened the window; the raw
+  query silently by the database session's UTC offset (docs/13-phase-6-group-chat.md §4).
 - Re-adding a removed member sets `joinedAt` to the new join time and clears `leftAt`, restarting
   the visible window from that moment (Q-17 covers the alternative).
 - Because visibility depends on it, `joinedAt` is written by the server only, never accepted from

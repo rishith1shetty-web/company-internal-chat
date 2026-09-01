@@ -416,11 +416,11 @@ nothing.
 | `POST /api/session/switch-user` | **Switch User / Clear Device Identity** — revokes the session *and* the `Device` row server-side, clears both cookies | own session and own device only |
 | `GET /api/users` | Known users + presence, for starting chats | valid session |
 | `GET /api/conversations` | The caller's conversations, ordered by last activity, with unread counts | membership-filtered in the query itself |
-| `POST /api/conversations` | Create a direct or group conversation | caller becomes member/owner |
+| `POST /api/conversations` | Create a direct or group conversation | caller becomes member/owner. **Built (Phases 5-6).** `{type:"DIRECT", userId}` or `{type:"GROUP", name, memberIds[]}`; the creator is taken from the session and is always a member, and always the `OWNER` of a group they create |
 | `GET /api/conversations/:id` | Conversation detail + members | caller is an active member |
-| `PATCH /api/conversations/:id` | Rename a group | per the Q-05 role rule |
-| `POST /api/conversations/:id/members` | Add members | per the Q-05 role rule |
-| `DELETE /api/conversations/:id/members/:userId` | Remove a member / leave | per the Q-05 role rule |
+| `PATCH /api/conversations/:id` | Rename a group | per the Q-05 role rule. **Not built** — deferred from Phase 6 (docs/13-phase-6-group-chat.md §8) |
+| `POST /api/conversations/:id/members` | Add members | **Built (Phase 6).** Any active member of the group (Q-05b (a)). Everybody added gets `joinedAt = now` |
+| `DELETE /api/conversations/:id/members/:userId` | Remove a member / leave | **Built (Phase 6).** Anybody may remove themselves; only an `OWNER` may remove somebody else. Which it is comes from comparing the path id with the session's, never from the request body. Sets `leftAt`; the row is kept |
 | `GET /api/conversations/:id/messages` | Keyset-paginated history (`before`/`after` + `limit`) | active member **and** `Message.createdAt >= member.joinedAt` |
 | `POST /api/conversations/:id/messages` | Send a message (REST fallback, and the path used when attaching a file) | caller is an active member |
 | `POST /api/conversations/:id/attachments` | Upload a file, returns an attachment id | caller is an active member |

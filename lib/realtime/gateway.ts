@@ -11,6 +11,7 @@
  *   handshake  →  cookie → resolveIdentity() → User.id     (no valid identity → disconnect)
  *   join       →  findActiveMembership() → room            (never on the client's say-so)
  *   send       →  membership + validate → commit → ack → broadcast
+ *   changed    →  a committed membership change (over HTTP) → tell the members to re-read
  *
  * Nothing is broadcast before PostgreSQL has committed the row: the real-time layer is a delivery
  * accelerator, never the source of truth.
@@ -50,6 +51,12 @@ import {
   type SocketError,
   type SocketErrorCode,
 } from './events';
+import {
+  clearRealtimeNotifier,
+  setRealtimeNotifier,
+  type ConversationAudienceChange,
+  type RealtimeNotifier,
+} from './notify';
 import { PresenceTracker } from './presence';
 
 type ChatSocket = Socket<ClientToServerEvents, ServerToClientEvents, never, SocketData>;
@@ -485,10 +492,50 @@ export function createRealtimeGateway(
     io.to(rooms.user(userId)).emit('presence:update', payload);
   }
 
+  /*
+   * The seam route handlers reach the socket server through (lib/realtime/notify.ts).
+   *
+   * Group creation, adding a member and leaving all happen over HTTP, and all three have to
+   * change somebody else's screen. This is the only way in, and it accepts an audience the
+   * caller read from the database — never one from a request.
+   */
+  const notifier: RealtimeNotifier = {
+    conversationChanged(change: ConversationAudienceChange): void {
+      const room = rooms.conversation(change.conversationId);
+      const payload = { conversationId: change.conversationId };
+
+      /*
+       * Joining the room here is what makes the next message reach a newly added member without
+       * waiting for them to reload. It grants nothing: `memberIds` came from the membership
+       * table, which is the same source `conversation:join` authorizes against.
+       */
+      for (const userId of change.memberIds) {
+        io.in(rooms.user(userId)).socketsJoin(room);
+        io.to(rooms.user(userId)).emit('conversation:changed', payload);
+      }
+
+      /*
+       * And leaving the room is what stops a removed member receiving the next one. Their own
+       * sockets are told too, so the conversation disappears from their sidebar rather than
+       * lingering until they reload — the order matters, because the notification is what makes
+       * them re-read.
+       */
+      for (const userId of change.removedIds ?? []) {
+        io.to(rooms.user(userId)).emit('conversation:changed', payload);
+        io.in(rooms.user(userId)).socketsLeave(room);
+      }
+    },
+  };
+
+  setRealtimeNotifier(notifier);
+
   return {
     io,
     presence,
     async close(): Promise<void> {
+      // Only if it is still ours: a test that started a second gateway must not have its
+      // registration removed by the first one shutting down.
+      clearRealtimeNotifier(notifier);
       presence.dispose();
       // Disconnects every socket and stops accepting new ones. The HTTP server is closed by
       // server.ts, which owns it.

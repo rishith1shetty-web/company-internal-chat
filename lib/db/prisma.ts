@@ -6,10 +6,19 @@
  *
  * Three things this module is responsible for:
  *
- * 1. **One client per process.** Next.js development reloads modules on every edit; a client
- *    created at module scope would leak a connection pool per reload until PostgreSQL refuses
- *    new connections. The instance is therefore cached on `globalThis` in development, which is
- *    the standard remedy. In production the module is evaluated once and the cache is unused.
+ * 1. **One client per process, in every environment.** The instance is cached on `globalThis`,
+ *    which is the standard remedy for Next.js development reloading modules on every edit — a
+ *    client at module scope would leak a connection pool per reload until PostgreSQL refuses new
+ *    connections.
+ *
+ *    The cache is NOT skipped in production, and that is the whole point of this note. It was,
+ *    on the reasoning that the module is evaluated once there so a cache would be redundant. It
+ *    is not redundant: nothing here holds the client except the cache, so skipping it made every
+ *    single `getDb()` call construct a fresh client and a fresh pool. A production server then
+ *    accumulates connections request by request until PostgreSQL answers "remaining connection
+ *    slots are reserved for roles with the SUPERUSER attribute" and every route starts failing.
+ *    Found in the Phase 6 browser regression, which was the first thing to put sustained traffic
+ *    through a production build.
  *
  * 2. **The single-database guard.** The connection string is parsed through `lib/db/target.ts`
  *    before a client exists, so a `DATABASE_URL` pointing anywhere other than `company_chat_db`
@@ -31,7 +40,8 @@ import { PrismaClient } from '../../prisma/generated/client';
 import { parseDatabaseUrl } from './target';
 
 /**
- * Cached across module reloads in development only. Typed on `globalThis` rather than cast at
+ * The one client, cached across module reloads and across the separately-bundled copies of this
+ * module that Next.js and the custom server each load. Typed on `globalThis` rather than cast at
  * the use site so the shape stays checked.
  */
 const globalForPrisma = globalThis as unknown as {
@@ -68,9 +78,9 @@ export function getDb(): PrismaClient {
 
   const client = createClient();
 
-  if (process.env['NODE_ENV'] !== 'production') {
-    globalForPrisma.__companyChatPrisma = client;
-  }
+  // Unconditionally, including in production: see note 1 above. Without this line the pool is
+  // per-call rather than per-process, and the server exhausts PostgreSQL under ordinary use.
+  globalForPrisma.__companyChatPrisma = client;
 
   return client;
 }

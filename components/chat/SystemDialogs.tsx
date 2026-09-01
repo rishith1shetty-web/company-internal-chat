@@ -2,7 +2,7 @@
 
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import { AttachmentIcon, FileIcon, GroupIcon, LockIcon } from '@/components/ui/icons';
+import { AttachmentIcon, FileIcon, LockIcon } from '@/components/ui/icons';
 import { userDiscriminator } from '@/lib/chat/format';
 import type { UserSummary } from '@/lib/chat/types';
 
@@ -61,57 +61,6 @@ function PlannedItem({ icon, children }: { icon: React.ReactNode; children: Reac
 }
 
 /**
- * Group conversations placeholder.
- *
- * The control is in the sidebar from Phase 2 so the layout is settled, and the picker and form
- * behind it are written (`NewGroupDialog`). What is missing is the server side: creating a group,
- * adding and removing members, and the authorization rules that decide who may do either. That
- * is Phase 6. Until it exists this says so, rather than offering a form whose "Create group"
- * button could not save anything (CLAUDE.md §12).
- */
-export function GroupsUnavailableDialog({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
-  return (
-    <Modal
-      open={open}
-      title="Group chat arrives in the next phase"
-      description="One-to-one conversations are available now."
-      onClose={onClose}
-      footer={
-        <Button variant="primary" onClick={onClose}>
-          Close
-        </Button>
-      }
-    >
-      <p className="text-sm text-ink-muted">
-        Start a one-to-one conversation with &ldquo;New chat&rdquo; in the meantime. Those
-        messages are stored on the company server and stay available when you return.
-      </p>
-
-      <ul className="mt-3 space-y-2.5 text-sm text-ink-muted">
-        <PlannedItem icon={<GroupIcon className="h-4 w-4" />}>
-          Named groups with several members, created and managed from this screen.
-        </PlannedItem>
-        <PlannedItem icon={<LockIcon className="h-4 w-4" />}>
-          Membership checked on the server for every message and every file, so a group&apos;s
-          history is only readable by the people actually in it.
-        </PlannedItem>
-      </ul>
-
-      <p className="mt-4 border-t border-line pt-3 text-xs text-ink-subtle">
-        Members added to a group will see messages from the moment they join, not the conversation
-        that came before.
-      </p>
-    </Modal>
-  );
-}
-
-/**
  * Settings.
  *
  * READ-ONLY, and now read-only about identity in particular. There are no preferences to change
@@ -150,7 +99,7 @@ export function SettingsDialog({
         <SettingRow label="Your ID">{userDiscriminator(currentUser.id)}</SettingRow>
         <SettingRow label="This computer">{deviceLabel}</SettingRow>
         <SettingRow label="Sign-in">Assigned to this computer by IT</SettingRow>
-        <SettingRow label="Conversations">One-to-one (groups arrive in a later phase)</SettingRow>
+        <SettingRow label="Conversations">One-to-one and group</SettingRow>
         <SettingRow label="Availability">
           Everyone on the company network who can reach this application
         </SettingRow>

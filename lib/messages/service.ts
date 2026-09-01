@@ -153,34 +153,66 @@ const messageSelection = {
 } as const;
 
 /**
- * Records a membership/group event in the conversation's own timeline.
+ * A Prisma client or a transaction handle.
  *
- * `SYSTEM` messages have no sender: the server writes them, not a user. Phase 6 uses this for
- * group events; Phase 4 exposes it so the type is exercised and the shape is settled.
+ * Group membership changes (Phase 6) write the membership rows and the `SYSTEM` message that
+ * records them in ONE transaction, so the timeline cannot end up describing a change that did
+ * not commit. That means the message writer has to be usable inside a caller's transaction as
+ * well as on its own.
  */
+export type MessageWriter = PrismaClient | Prisma.TransactionClient;
+
+export interface SystemMessageInput {
+  conversationId: string;
+  body: string;
+  clientMessageId: string;
+}
+
+/**
+ * Writes a membership/group event into the conversation's timeline, inside the caller's
+ * transaction, and returns the stored row.
+ *
+ * `SYSTEM` messages have no sender: the server writes them, not a user. The unique index on
+ * `(senderId, clientMessageId)` therefore never collides between two of them — PostgreSQL treats
+ * NULLs as distinct — so these cannot be de-duplicated by the send guard and must not be retried
+ * blindly.
+ *
+ * There is deliberately no way to supply `createdAt`. The column default is the database's own
+ * transaction timestamp, and the group operations depend on that: they write the event first and
+ * stamp `joinedAt` from the row that comes back, so a member's D-03 window and the message
+ * announcing them are the same instant on the same clock. An overridable timestamp here would be
+ * an invitation to hand in the application's clock and quietly widen somebody's window
+ * (lib/conversations/service.ts).
+ */
+export async function writeSystemMessage(
+  tx: MessageWriter,
+  input: SystemMessageInput,
+): Promise<StoredMessage> {
+  const created = await tx.message.create({
+    data: {
+      conversationId: input.conversationId,
+      senderId: null,
+      type: 'SYSTEM',
+      body: input.body,
+      clientMessageId: input.clientMessageId,
+    },
+    select: messageSelection,
+  });
+
+  await tx.conversation.update({
+    where: { id: input.conversationId },
+    data: { lastMessageAt: created.createdAt },
+  });
+
+  return created;
+}
+
+/** The same write, in a transaction of its own, for a caller that has none. */
 export async function recordSystemMessage(
   db: PrismaClient,
-  input: { conversationId: string; body: string; clientMessageId: string },
+  input: SystemMessageInput,
 ): Promise<StoredMessage> {
-  return db.$transaction(async (tx) => {
-    const created = await tx.message.create({
-      data: {
-        conversationId: input.conversationId,
-        senderId: null,
-        type: 'SYSTEM',
-        body: input.body,
-        clientMessageId: input.clientMessageId,
-      },
-      select: messageSelection,
-    });
-
-    await tx.conversation.update({
-      where: { id: input.conversationId },
-      data: { lastMessageAt: created.createdAt },
-    });
-
-    return created;
-  });
+  return db.$transaction((tx) => writeSystemMessage(tx, input));
 }
 
 /* --------------------------------------------------------------------------------------------- */

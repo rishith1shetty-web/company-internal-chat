@@ -72,6 +72,17 @@ export interface JoinedConversationWire {
   joinedAt: string;
 }
 
+/**
+ * `conversation:changed` — a conversation the recipient is, or has just stopped being, a member
+ * of has changed.
+ *
+ * Deliberately just an id. The recipient re-reads the authorized REST endpoints; nothing about
+ * the conversation travels in the event itself.
+ */
+export interface ConversationChangedWire {
+  conversationId: string;
+}
+
 export interface SessionWire {
   userId: string;
   displayName: string;
@@ -158,6 +169,18 @@ export interface ConversationCreatedWire {
   users: UserWire[];
   /** False when an existing direct conversation was returned instead of a new one. */
   created: boolean;
+}
+
+/**
+ * `POST /api/conversations/:id/members` and `DELETE /api/conversations/:id/members/:userId`.
+ *
+ * `conversation` is null when the caller is no longer a member — which is what leaving a group
+ * looks like from the leaver's side. The response is built through the same membership-filtered
+ * listing the sidebar uses, so it can never describe a conversation the caller cannot see.
+ */
+export interface ConversationMembersWire {
+  conversation: ConversationWire | null;
+  users: UserWire[];
 }
 
 /** `GET /api/conversations/:id/messages` — oldest first. */

@@ -26,6 +26,7 @@ import { MAX_MESSAGE_LENGTH } from '../messages/service';
 export { SOCKET_PATH } from '../chat/wire';
 export type {
   Ack,
+  ConversationChangedWire,
   JoinedConversationWire,
   MessageWire,
   PresenceWire,
@@ -36,6 +37,7 @@ export type {
 
 import type {
   Ack,
+  ConversationChangedWire,
   JoinedConversationWire,
   MessageWire,
   PresenceWire,
@@ -117,6 +119,17 @@ export interface ServerToClientEvents {
 
   /** A user this socket shares a conversation with came online or went offline. */
   'presence:update': (payload: PresenceWire) => void;
+
+  /**
+   * A conversation this user is (or has just stopped being) a member of has changed: it was
+   * created, somebody was added, or somebody left.
+   *
+   * Carries an id and nothing else, on purpose. The client answers it by re-reading
+   * `GET /api/conversations`, which authorizes from the caller's own membership rows — so this
+   * event cannot disclose a name, a member list or a message, and a browser that receives one in
+   * error simply learns nothing.
+   */
+  'conversation:changed': (payload: ConversationChangedWire) => void;
 
   /** An error that is not the answer to a specific request (e.g. a failed re-authorization). */
   'server:error': (payload: SocketError) => void;

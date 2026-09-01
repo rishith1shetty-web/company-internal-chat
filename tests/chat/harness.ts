@@ -194,6 +194,32 @@ export async function seedDirectConversation(
   return trackConversation(conversation.id);
 }
 
+/**
+ * Writes a message at a chosen instant.
+ *
+ * `sendMessage` takes its timestamp from the database, which is right for the application and
+ * useless for a test that needs to place a message definitively before or after a join. Tests
+ * that care about the D-03 boundary set the time explicitly instead of racing the clock.
+ */
+export async function seedMessageAt(
+  conversationId: string,
+  senderId: string | null,
+  body: string,
+  createdAt: Date,
+): Promise<{ id: string; createdAt: Date }> {
+  return db().message.create({
+    data: {
+      conversationId,
+      senderId,
+      type: senderId === null ? 'SYSTEM' : 'TEXT',
+      body,
+      clientMessageId: crypto.randomUUID(),
+      createdAt,
+    },
+    select: { id: true, createdAt: true },
+  });
+}
+
 /** Creates a group conversation. Used only to prove the D-03 join window is applied. */
 export async function seedGroupConversation(
   ownerId: string,

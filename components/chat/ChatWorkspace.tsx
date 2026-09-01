@@ -8,13 +8,15 @@ import { DetailsPanel } from '@/components/chat/DetailsPanel';
 import { EmptyChatState } from '@/components/chat/EmptyChatState';
 import { MessageComposer } from '@/components/chat/MessageComposer';
 import { MessageList } from '@/components/chat/MessageList';
-import { NewChatDialog } from '@/components/chat/NewConversationDialogs';
-import { Sidebar } from '@/components/chat/Sidebar';
 import {
-  AttachmentDialog,
-  GroupsUnavailableDialog,
-  SettingsDialog,
-} from '@/components/chat/SystemDialogs';
+  AddMembersDialog,
+  NewChatDialog,
+  NewGroupDialog,
+  RemoveMemberDialog,
+  type PendingMemberRemoval,
+} from '@/components/chat/NewConversationDialogs';
+import { Sidebar } from '@/components/chat/Sidebar';
+import { AttachmentDialog, SettingsDialog } from '@/components/chat/SystemDialogs';
 import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { hasNameCollision } from '@/lib/chat/format';
@@ -32,7 +34,7 @@ import { useChatSession } from '@/lib/chat/useChatSession';
 import { cn } from '@/lib/ui/cn';
 import { useMediaQuery } from '@/lib/ui/useMediaQuery';
 
-type DialogName = 'new-chat' | 'new-group' | 'attachment' | 'settings';
+type DialogName = 'new-chat' | 'new-group' | 'add-members' | 'attachment' | 'settings';
 
 /**
  * The application shell: header, conversation sidebar, chat panel and details panel, plus the
@@ -42,9 +44,9 @@ type DialogName = 'new-chat' | 'new-group' | 'attachment' | 'settings';
  * `useChatSession` owns that, and everything below this component is presentational and receives
  * data and callbacks (docs/01-architecture.md §4, "Layer rules").
  *
- * Conversations, messages, presence and identity are real and come from the server. Group
- * creation is Phase 6 and file transfer is Phase 7; both controls are present and say so rather
- * than doing something that only looks like it worked.
+ * Conversations, messages, presence, group membership and identity are all real and come from the
+ * server. File transfer is Phase 7, and that one control is present and says so rather than doing
+ * something that only looks like it worked.
  *
  * IDENTITY IS NOT A CONTROL HERE. There is no name entry, no sign-out, no switch-user and no
  * clear-identity anywhere below this component: the computer is assigned to an employee by an
@@ -57,6 +59,15 @@ export function ChatWorkspace() {
 
   const [openDialog, setOpenDialog] = useState<DialogName | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /*
+   * Removing somebody from a group — or leaving one — is confirmed first.
+   *
+   * Not because the removal is hard to undo, but because what it does to the person's history is:
+   * under D-03 a re-added member starts a fresh window, so the part of the conversation they can
+   * read today is not the part they would read after coming back.
+   */
+  const [pendingRemoval, setPendingRemoval] = useState<PendingMemberRemoval | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   /*
    * The details panel is open by default where there is room for it beside the conversation,
@@ -84,6 +95,17 @@ export function ChatWorkspace() {
   const openNewChat = () => {
     session.refreshDirectory();
     setOpenDialog('new-chat');
+  };
+
+  /** Same reason as `openNewChat`: a picker must not open on a directory loaded minutes ago. */
+  const openNewGroup = () => {
+    session.refreshDirectory();
+    setOpenDialog('new-group');
+  };
+
+  const openAddMembers = () => {
+    session.refreshDirectory();
+    setOpenDialog('add-members');
   };
 
   if (state.screen === 'loading') {
@@ -126,6 +148,39 @@ export function ChatWorkspace() {
   const history = selectedConversation
     ? selectHistoryState(state, selectedConversation.id)
     : null;
+
+  /*
+   * Colleagues who could be added to the open group: the directory minus the people already in
+   * it. Offering a current member would invite an accidental re-add, which resets their join time
+   * and hides the history they can read today. The server refuses to do that anyway; this keeps
+   * it from being asked.
+   */
+  const memberIds = new Set(selectedConversation?.members.map((member) => member.userId) ?? []);
+  const addableColleagues = directoryUsers.filter((user) => !memberIds.has(user.id));
+
+  const requestRemoval = (userId: string) => {
+    if (!selectedConversation) return;
+    setPendingRemoval({
+      conversationId: selectedConversation.id,
+      userId,
+      displayName: usersById.get(userId)?.displayName ?? 'That person',
+      groupName: selectedTitle,
+      isSelf: userId === currentUser.id,
+    });
+  };
+
+  const confirmRemoval = () => {
+    if (!pendingRemoval || removing) return;
+    const target = pendingRemoval;
+
+    setRemoving(true);
+    void session
+      .removeMember(target.conversationId, target.userId)
+      .finally(() => {
+        setRemoving(false);
+        setPendingRemoval(null);
+      });
+  };
 
   return (
     <div className="flex h-dvh flex-col bg-canvas text-ink">
@@ -175,7 +230,7 @@ export function ChatWorkspace() {
             onSearchChange={session.setSearchTerm}
             onSelectConversation={selectConversation}
             onNewChat={openNewChat}
-            onNewGroup={() => setOpenDialog('new-group')}
+            onNewGroup={openNewGroup}
             onClose={() => setSidebarOpen(false)}
           />
         </aside>
@@ -219,7 +274,7 @@ export function ChatWorkspace() {
             <EmptyChatState
               hasNoConversations={state.conversations.length === 0}
               onNewChat={openNewChat}
-              onNewGroup={() => setOpenDialog('new-group')}
+              onNewGroup={openNewGroup}
             />
           )}
         </main>
@@ -242,6 +297,8 @@ export function ChatWorkspace() {
                 currentUserId={currentUser.id}
                 usersById={usersById}
                 onClose={() => setDetailsOverride(false)}
+                onAddMembers={openAddMembers}
+                onRequestRemove={requestRemoval}
               />
             </aside>
           </>
@@ -257,7 +314,28 @@ export function ChatWorkspace() {
           onSearch={session.searchDirectory}
         />
       ) : null}
-      <GroupsUnavailableDialog open={openDialog === 'new-group'} onClose={closeDialog} />
+      {openDialog === 'new-group' ? (
+        <NewGroupDialog
+          users={directoryUsers}
+          onClose={closeDialog}
+          onCreate={(name, memberIds) => void session.createGroup(name, memberIds)}
+        />
+      ) : null}
+      {openDialog === 'add-members' && selectedConversation ? (
+        <AddMembersDialog
+          groupName={selectedTitle}
+          candidates={addableColleagues}
+          onClose={closeDialog}
+          onAdd={(userIds) => void session.addMembers(selectedConversation.id, userIds)}
+          onSearch={session.searchDirectory}
+        />
+      ) : null}
+      <RemoveMemberDialog
+        pending={pendingRemoval}
+        busy={removing}
+        onCancel={() => setPendingRemoval(null)}
+        onConfirm={confirmRemoval}
+      />
       <AttachmentDialog open={openDialog === 'attachment'} onClose={closeDialog} />
       <SettingsDialog
         open={openDialog === 'settings'}

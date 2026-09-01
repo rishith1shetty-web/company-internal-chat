@@ -1,10 +1,9 @@
 /**
  * Conversation service — resolving, listing and marking conversations read.
  *
- * PHASE 5 SCOPE: direct (one-to-one) conversations. Group creation and management is Phase 6;
- * nothing here creates a `GROUP` row. The listing and read-marker functions are already written
- * against the generic membership model, so Phase 6 adds group creation rather than rewriting
- * this module.
+ * SCOPE: direct (one-to-one) conversations from Phase 5, and group creation and membership from
+ * Phase 6. The listing and read-marker functions were written against the generic membership
+ * model in Phase 5 and did not change for groups — which is the point of rule 2 below.
  *
  * Three rules this module exists to hold in one place:
  *
@@ -16,16 +15,20 @@
  * 2. **`joinedAt` bounds everything (D-03).** Previews and unread counts are computed inside the
  *    caller's visible window, not over the whole conversation, exactly as message queries are.
  *    For a direct conversation both members join at creation so the window is the whole history,
- *    but the filter is applied anyway — a rule that is only applied where it currently matters
- *    is a rule that will be missed in Phase 6.
+ *    and the filter is applied anyway. That is why adding groups needed no change here: a member
+ *    added to a group today has today's `joinedAt`, and the same clause that was a no-op for
+ *    direct conversations now hides everything said before they arrived.
  *
  * 3. **Identity is never resolved by name.** Every function here takes user ids. A display name
  *    is a label (D-02); two people may share one, and no lookup in this file accepts one.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { PrismaClient } from '../../prisma/generated/client';
 import { Prisma } from '../../prisma/generated/client';
-import { findActiveMembership } from '../authz/membership';
+import { findActiveMembership, type ActiveMembership } from '../authz/membership';
+import { writeSystemMessage } from '../messages/service';
 
 /** Prisma's unique-constraint violation. */
 const UNIQUE_VIOLATION = 'P2002';
@@ -34,7 +37,14 @@ export type ConversationFailure =
   | 'USER_NOT_FOUND'
   | 'SELF_CONVERSATION'
   | 'NOT_A_MEMBER'
-  | 'MESSAGE_NOT_FOUND';
+  | 'MESSAGE_NOT_FOUND'
+  /* Group management (Phase 6). */
+  | 'NOT_A_GROUP'
+  | 'NOT_AN_OWNER'
+  | 'INVALID_GROUP_NAME'
+  | 'NO_MEMBERS'
+  | 'TOO_MANY_MEMBERS'
+  | 'MEMBER_NOT_FOUND';
 
 export class ConversationError extends Error {
   readonly reason: ConversationFailure;
@@ -276,9 +286,17 @@ async function loadPreviews(
 /**
  * Unread counts for every conversation, in one grouped query.
  *
- * Unread means: inside the caller's visible window, newer than their read marker, and not sent
- * by the caller. A message with no sender (a `SYSTEM` message) counts as unread, which is what
- * Prisma's `not` filter does with nulls and what the interface should show.
+ * Unread means: inside the caller's visible window, newer than their read marker, and sent by
+ * somebody else.
+ *
+ * `SYSTEM` messages do NOT raise the badge, and that is deliberate rather than incidental.
+ * `senderId: { not: userId }` compiles to `senderId <> $1`, which is NULL — and therefore false —
+ * for a server-written message, so they are excluded. It is also the behaviour to want: a badge
+ * says somebody has said something to you, and "Alice added Bob" has not. Without it, creating a
+ * group would put an unread marker on every member's sidebar, including the creator's.
+ *
+ * The group still surfaces, because the event moves `lastMessageAt` and sorts the conversation to
+ * the top of the list.
  */
 async function countUnread(
   db: PrismaClient,
@@ -378,4 +396,467 @@ export async function markConversationRead(
     lastReadAt: effectiveReadAt,
     unreadCount,
   };
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/* Groups (Phase 6)                                                                                */
+/* --------------------------------------------------------------------------------------------- */
+
+/**
+ * Group name ceiling. Matches `Conversation.name varchar(120)`, so a name that fits here fits the
+ * column — the database is not left to reject what the service should have.
+ */
+export const MAX_GROUP_NAME_LENGTH = 120;
+
+/**
+ * Ceiling on how many people one request may add.
+ *
+ * Not a policy about group size — it bounds the work a single request can ask for, so a crafted
+ * `memberIds` array cannot turn one POST into ten thousand inserts.
+ */
+export const MAX_GROUP_MEMBERS = 100;
+
+/** Control characters, stripped from a group name before it is stored. */
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g;
+
+/**
+ * Validates and normalises a group name.
+ *
+ * Trimmed, whitespace-collapsed, control characters removed: a name is rendered in the sidebar
+ * and in the conversation header, and a newline or a control character there is a display defect
+ * rather than anything anybody typed on purpose.
+ */
+export function normaliseGroupName(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new ConversationError('INVALID_GROUP_NAME', 'Give the group a name.');
+  }
+
+  const cleaned = value.replace(CONTROL_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
+
+  if (cleaned.length === 0) {
+    throw new ConversationError('INVALID_GROUP_NAME', 'Give the group a name.');
+  }
+  if (cleaned.length > MAX_GROUP_NAME_LENGTH) {
+    throw new ConversationError(
+      'INVALID_GROUP_NAME',
+      `A group name may be at most ${MAX_GROUP_NAME_LENGTH} characters.`,
+    );
+  }
+
+  return cleaned;
+}
+
+/**
+ * The people to act on, as ids, with the actor removed and duplicates collapsed.
+ *
+ * Duplicate ids in a request are not an error and are not a route to two memberships:
+ * `[bob, bob, bob]` is the same request as `[bob]`. The unique index on
+ * `(conversationId, userId)` would catch it regardless; collapsing here means the caller gets the
+ * result they meant instead of a constraint violation.
+ */
+function distinctTargets(memberIds: readonly unknown[], excludeUserId: string): string[] {
+  const ids = new Set<string>();
+  for (const value of memberIds) {
+    if (typeof value === 'string' && value !== excludeUserId) ids.add(value);
+  }
+  return [...ids];
+}
+
+/**
+ * Confirms that every id names a real, active user.
+ *
+ * By id, never by name: two colleagues may be called the same thing (D-02), so a name could not
+ * identify which of them was meant even if the API accepted one.
+ */
+async function requireActiveUsers(db: PrismaClient, userIds: readonly string[]): Promise<void> {
+  if (userIds.length === 0) return;
+
+  const found = await db.user.findMany({
+    where: { id: { in: [...userIds] }, isActive: true },
+    select: { id: true },
+  });
+
+  if (found.length !== userIds.length) {
+    // Which id was wrong is deliberately not said: the caller supplied them, and confirming
+    // which ones exist would make this endpoint a user-id oracle.
+    throw new ConversationError(
+      'USER_NOT_FOUND',
+      'One of those colleagues is no longer available.',
+    );
+  }
+}
+
+/** The actor's own membership of a conversation that must be a group. */
+async function requireGroupMembership(
+  db: PrismaClient,
+  userId: string,
+  conversationId: string,
+): Promise<ActiveMembership> {
+  const membership = await findActiveMembership(db, userId, conversationId);
+
+  // Same answer for "not a member" and "no such conversation", as everywhere else.
+  if (!membership) {
+    throw new ConversationError('NOT_A_MEMBER', 'You do not have access to this conversation.');
+  }
+  if (membership.conversationType !== 'GROUP') {
+    throw new ConversationError(
+      'NOT_A_GROUP',
+      'Members can only be changed in a group conversation.',
+    );
+  }
+
+  return membership;
+}
+
+/**
+ * Group operations take their timestamp from a row PostgreSQL stamped, never from `new Date()`
+ * and never from a raw `SELECT now()`.
+ *
+ * The difference is a security one. Every `createdAt` in this schema defaults to
+ * `CURRENT_TIMESTAMP`, so message times come from the database's clock, and D-03 compares
+ * `joinedAt` against them. Two ways of producing that join time were tried, and both are wrong:
+ *
+ *   - `new Date()` is the application's clock. On a server whose time runs even slightly ahead of
+ *     the database's, a member added "now" is given a join time BEFORE messages that already
+ *     exist, and sees history they are not entitled to.
+ *
+ *   - `SELECT now()` through `$queryRaw` is worse, and silently so. Prisma's raw path renders a
+ *     `timestamptz` in the database session's zone and hands it back as though it were UTC, so on
+ *     a server whose session is not UTC it is out by the whole offset — four hours, on the machine
+ *     this was found on. That is four hours of a group's history handed to somebody who has just
+ *     joined. Nothing about the value looks wrong until it is compared with another one.
+ *
+ * What is used instead: each of these operations already writes a `SYSTEM` message recording what
+ * happened. That row is written FIRST, its `createdAt` filled in by the column default — the
+ * database's own transaction timestamp — and read back through Prisma's ordinary model mapping,
+ * which round-trips a `timestamptz` correctly. The membership rows are then stamped with exactly
+ * that value.
+ *
+ * Two things fall out of it. The clocks cannot disagree, because only one of them is consulted.
+ * And a new member's `joinedAt` is exactly the timestamp of the message announcing them, so the
+ * `createdAt >= joinedAt` window admits the event that added them and nothing before it.
+ */
+
+export interface CreateGroupInput {
+  /** Server-derived, from the session. The creator is always a member and always the owner. */
+  creatorId: string;
+  name: unknown;
+  /** The other employees to add, by id. The creator's own id is ignored if it appears. */
+  memberIds: readonly unknown[];
+}
+
+export interface GroupChangeResult {
+  conversationId: string;
+  /** Everyone who is now an active member — the audience entitled to hear about the change. */
+  memberIds: string[];
+  /** Users who have just stopped being members, so their sockets leave the room. */
+  removedIds: string[];
+}
+
+/**
+ * Creates a group conversation.
+ *
+ * The creator is a member by construction and is its `OWNER`; neither is taken from the request.
+ * There is no `createdById`, no `role` and no `joinedAt` a browser can supply — an API accepting
+ * any of the three would let a caller create a group they are not in, or make somebody else its
+ * owner.
+ *
+ * The membership rows and the `SYSTEM` message recording the creation are written in one
+ * transaction and share one timestamp, so every founding member's `joinedAt` is exactly the
+ * moment the group's timeline begins and all of them can see it.
+ */
+export async function createGroupConversation(
+  db: PrismaClient,
+  input: CreateGroupInput,
+): Promise<GroupChangeResult> {
+  const name = normaliseGroupName(input.name);
+  const targets = distinctTargets(input.memberIds, input.creatorId);
+
+  if (targets.length === 0) {
+    throw new ConversationError('NO_MEMBERS', 'Add at least one other colleague to the group.');
+  }
+  if (targets.length > MAX_GROUP_MEMBERS) {
+    throw new ConversationError(
+      'TOO_MANY_MEMBERS',
+      `A group may be created with at most ${MAX_GROUP_MEMBERS} other members.`,
+    );
+  }
+
+  await requireActiveUsers(db, targets);
+
+  const conversationId = await db.$transaction(async (tx) => {
+    const conversation = await tx.conversation.create({
+      data: {
+        type: 'GROUP',
+        name,
+        createdById: input.creatorId,
+        // `directKey` stays null: it is the one-conversation-per-pair constraint for direct
+        // conversations, and two groups containing the same people are two different groups.
+      },
+      select: { id: true },
+    });
+
+    // Stamped by the database, and it becomes the group's zero hour.
+    const opened = await writeSystemMessage(tx, {
+      conversationId: conversation.id,
+      body: `${name} was created.`,
+      clientMessageId: randomUUID(),
+    });
+
+    await tx.conversationMember.createMany({
+      data: [
+        {
+          conversationId: conversation.id,
+          userId: input.creatorId,
+          role: 'OWNER',
+          joinedAt: opened.createdAt,
+        },
+        ...targets.map((userId) => ({
+          conversationId: conversation.id,
+          userId,
+          role: 'MEMBER' as const,
+          joinedAt: opened.createdAt,
+        })),
+      ],
+    });
+
+    return conversation.id;
+  });
+
+  return { conversationId, memberIds: [input.creatorId, ...targets], removedIds: [] };
+}
+
+export interface AddMembersInput {
+  /** Server-derived. Must already be an active member of the group. */
+  actorId: string;
+  conversationId: string;
+  userIds: readonly unknown[];
+}
+
+/**
+ * Adds employees to an existing group.
+ *
+ * Authorization (Q-05b, option (a)): any active member may add. That is the documented
+ * recommendation, and it is the rule with the fewest surprises — the alternative makes an owner
+ * on holiday a bottleneck for a team that needs somebody in the conversation.
+ *
+ * **`joinedAt` is set to now, and it is the whole security story of this function.** A member
+ * added today gets today's join time, so every query bounded by `createdAt >= joinedAt` —
+ * history, previews, unread counts, and the file downloads of Phase 7 — excludes everything said
+ * before. Nothing is deleted to achieve it: the older messages stay exactly where they are, and
+ * stay readable by the members who were present for them (D-03).
+ *
+ * Re-adding somebody who previously left resets `joinedAt` to now and clears their read marker,
+ * so their window restarts from this moment rather than resuming where it stopped (Q-17).
+ */
+export async function addGroupMembers(
+  db: PrismaClient,
+  input: AddMembersInput,
+): Promise<GroupChangeResult> {
+  const membership = await requireGroupMembership(db, input.actorId, input.conversationId);
+  const requested = distinctTargets(input.userIds, input.actorId);
+
+  if (requested.length === 0) {
+    throw new ConversationError('NO_MEMBERS', 'Choose at least one colleague to add.');
+  }
+  if (requested.length > MAX_GROUP_MEMBERS) {
+    throw new ConversationError(
+      'TOO_MANY_MEMBERS',
+      `At most ${MAX_GROUP_MEMBERS} colleagues can be added at once.`,
+    );
+  }
+
+  const existing = await db.conversationMember.findMany({
+    where: { conversationId: membership.conversationId, userId: { in: requested } },
+    select: { userId: true, leftAt: true },
+  });
+
+  const alreadyIn = new Set(
+    existing.filter((row) => row.leftAt === null).map((row) => row.userId),
+  );
+
+  /*
+   * Somebody already in the group is skipped, not rejected.
+   *
+   * Two people adding the same colleague at the same moment is an ordinary race, and the second
+   * one has got what they asked for. Re-adding a current member would reset their `joinedAt` and
+   * silently hide history they can currently read — a far worse outcome than doing nothing.
+   */
+  const targets = requested.filter((userId) => !alreadyIn.has(userId));
+
+  if (targets.length === 0) {
+    const current = await listActiveMemberIds(db, membership.conversationId);
+    return { conversationId: membership.conversationId, memberIds: current, removedIds: [] };
+  }
+
+  await requireActiveUsers(db, targets);
+
+  const [actor, added] = await Promise.all([
+    db.user.findUnique({ where: { id: input.actorId }, select: { displayName: true } }),
+    db.user.findMany({ where: { id: { in: targets } }, select: { id: true, displayName: true } }),
+  ]);
+
+  await db.$transaction(async (tx) => {
+    /*
+     * The event is written first so the database stamps it, and its timestamp becomes every new
+     * member's `joinedAt`. That ordering is what makes the two values identical rather than
+     * merely close, so the people just added can see the message that added them — and nothing
+     * that came before it.
+     */
+    const event = await writeSystemMessage(tx, {
+      conversationId: membership.conversationId,
+      body: `${actor?.displayName ?? 'Someone'} added ${formatNameList(
+        targets.map((id) => added.find((user) => user.id === id)?.displayName ?? 'someone'),
+      )}.`,
+      clientMessageId: randomUUID(),
+    });
+
+    for (const userId of targets) {
+      await tx.conversationMember.upsert({
+        where: { conversationId_userId: { conversationId: membership.conversationId, userId } },
+        create: {
+          conversationId: membership.conversationId,
+          userId,
+          role: 'MEMBER',
+          joinedAt: event.createdAt,
+        },
+        /*
+         * The re-add path. `joinedAt` moves forward and the read marker is cleared: a marker
+         * pointing at a message from before this join would suppress the unread count for
+         * messages they can now see, and would sit outside their own visible window.
+         */
+        update: {
+          joinedAt: event.createdAt,
+          leftAt: null,
+          lastReadMessageId: null,
+          lastReadAt: null,
+        },
+      });
+    }
+  });
+
+  const memberIds = await listActiveMemberIds(db, membership.conversationId);
+  return { conversationId: membership.conversationId, memberIds, removedIds: [] };
+}
+
+export interface RemoveMemberInput {
+  /** Server-derived. */
+  actorId: string;
+  conversationId: string;
+  /** Who to remove. Equal to `actorId` when somebody is leaving of their own accord. */
+  targetUserId: string;
+}
+
+/**
+ * Removes a member from a group, or leaves one.
+ *
+ * Authorization (Q-05b, option (a)): anybody may leave; only an `OWNER` may remove somebody
+ * else. Leaving needs no permission, because it takes access away rather than granting it.
+ *
+ * The membership row is NOT deleted — `leftAt` is set. That preserves the record of who was
+ * present when, which is why every authorization check in this application tests `leftAt IS
+ * NULL` rather than the row's existence. Messages the person wrote stay in the conversation and
+ * stay attributed to them.
+ *
+ * If the last owner leaves, ownership passes to the longest-standing remaining member. Without
+ * that a group would quietly become unmanageable — nobody able to remove anyone, and no way back
+ * short of direct SQL.
+ */
+export async function removeGroupMember(
+  db: PrismaClient,
+  input: RemoveMemberInput,
+): Promise<GroupChangeResult> {
+  const membership = await requireGroupMembership(db, input.actorId, input.conversationId);
+  const leaving = input.targetUserId === input.actorId;
+
+  if (!leaving && membership.role !== 'OWNER') {
+    throw new ConversationError(
+      'NOT_AN_OWNER',
+      'Only the group owner can remove someone from the group.',
+    );
+  }
+
+  const target = await db.conversationMember.findUnique({
+    where: {
+      conversationId_userId: {
+        conversationId: membership.conversationId,
+        userId: input.targetUserId,
+      },
+    },
+    select: { userId: true, role: true, leftAt: true },
+  });
+
+  if (!target || target.leftAt !== null) {
+    throw new ConversationError('MEMBER_NOT_FOUND', 'That person is not in this group.');
+  }
+
+  const [actor, removed] = await Promise.all([
+    db.user.findUnique({ where: { id: input.actorId }, select: { displayName: true } }),
+    db.user.findUnique({ where: { id: input.targetUserId }, select: { displayName: true } }),
+  ]);
+
+  await db.$transaction(async (tx) => {
+    const event = await writeSystemMessage(tx, {
+      conversationId: membership.conversationId,
+      body: leaving
+        ? `${actor?.displayName ?? 'Someone'} left the group.`
+        : `${actor?.displayName ?? 'Someone'} removed ${removed?.displayName ?? 'someone'}.`,
+      clientMessageId: randomUUID(),
+    });
+
+    await tx.conversationMember.update({
+      where: {
+        conversationId_userId: {
+          conversationId: membership.conversationId,
+          userId: input.targetUserId,
+        },
+      },
+      // Stamped from the event, so "when did they leave" and "which message says so" agree.
+      data: { leftAt: event.createdAt },
+    });
+
+    // Ownership succession, so a group is never left with nobody able to manage it.
+    if (target.role === 'OWNER') {
+      const remainingOwners = await tx.conversationMember.count({
+        where: { conversationId: membership.conversationId, leftAt: null, role: 'OWNER' },
+      });
+
+      if (remainingOwners === 0) {
+        const successor = await tx.conversationMember.findFirst({
+          where: { conversationId: membership.conversationId, leftAt: null },
+          orderBy: [{ joinedAt: 'asc' }, { id: 'asc' }],
+          select: { id: true },
+        });
+
+        if (successor) {
+          await tx.conversationMember.update({
+            where: { id: successor.id },
+            data: { role: 'OWNER' },
+          });
+        }
+      }
+    }
+  });
+
+  const memberIds = await listActiveMemberIds(db, membership.conversationId);
+  return {
+    conversationId: membership.conversationId,
+    memberIds,
+    removedIds: [input.targetUserId],
+  };
+}
+
+/** The active membership of a conversation, as ids: the audience for a change notification. */
+async function listActiveMemberIds(db: PrismaClient, conversationId: string): Promise<string[]> {
+  const members = await db.conversationMember.findMany({
+    where: { conversationId, leftAt: null },
+    select: { userId: true },
+  });
+  return members.map((member) => member.userId);
+}
+
+/** "Ann", "Ann and Bo", "Ann, Bo and Cai" — for the system message that records a change. */
+function formatNameList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? 'someone';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }

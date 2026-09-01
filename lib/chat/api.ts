@@ -19,6 +19,7 @@ import type {
   ApiErrorWire,
   ConversationCreatedWire,
   ConversationListWire,
+  ConversationMembersWire,
   DirectoryWire,
   MessagePageWire,
   ReadReceiptWire,
@@ -119,6 +120,60 @@ export function startDirectConversation(userId: string): Promise<ConversationCre
     headers: JSON_HEADERS,
     body: JSON.stringify({ type: 'DIRECT', userId }),
   });
+}
+
+/**
+ * Create a group: a name and the colleagues to add, by id.
+ *
+ * The creator is not in the payload. They are taken from the session, are always a member, and
+ * are always the group's owner — none of which a browser is allowed to state (CLAUDE.md §10).
+ */
+export function createGroupConversation(
+  name: string,
+  memberIds: string[],
+): Promise<ConversationCreatedWire> {
+  return request<ConversationCreatedWire>('/api/conversations', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ type: 'GROUP', name, memberIds }),
+  });
+}
+
+/**
+ * Add colleagues to a group.
+ *
+ * The server decides whether this caller may, and stamps everybody added with `joinedAt = now`,
+ * which is what keeps the group's earlier history invisible to them (D-03).
+ */
+export function addGroupMembers(
+  conversationId: string,
+  userIds: string[],
+): Promise<ConversationMembersWire> {
+  return request<ConversationMembersWire>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/members`,
+    {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ userIds }),
+    },
+  );
+}
+
+/**
+ * Remove somebody from a group, or leave it by naming yourself.
+ *
+ * One call for both: the server compares this id with the session's own and applies the rule that
+ * fits, so a browser cannot choose which rule it is judged by. `conversation` comes back null
+ * when the caller is the one who left.
+ */
+export function removeGroupMember(
+  conversationId: string,
+  userId: string,
+): Promise<ConversationMembersWire> {
+  return request<ConversationMembersWire>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+  );
 }
 
 export interface HistoryQuery {

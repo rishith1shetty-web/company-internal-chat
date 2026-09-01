@@ -83,7 +83,9 @@ not a blocker.
 
 ### Q-17 — Re-added members and their earlier history · DECISION REQUIRED (Phase 6)
 Under D-03, re-adding a removed member resets `joinedAt`, so messages they could previously read
-become inaccessible. **ASSUMED: that is correct and intended.** The alternative — restoring their
+become inaccessible. **ASSUMED: that is correct and intended. Implemented that way in Phase 6**,
+which also clears the returning member's read marker — one pointing at a message from before the
+new join would sit outside their window and suppress the unread count. The alternative — restoring their
 earlier visible window — requires modelling membership as multiple dated periods rather than one
 row, which is a schema change best made before Phase 3 if it is wanted at all.
 
@@ -96,13 +98,24 @@ a materially larger Phase 7.
 Can any user see every registered name in order to start a chat? **ASSUMED: yes.** Note that under
 D-02 this list will contain duplicate names and must show a discriminator.
 
-### Q-05b — Group management permissions · DECISION REQUIRED (Phase 6)
+### Q-05b — Group management permissions · ANSWERED (Phase 6)
 D-03 settled history visibility, but not who may perform management actions. Who may rename a
 group, add members, and remove members?
 
 - **(a) (recommended)** Owner/creator renames and removes; any member may add; any member may leave.
 - **(b)** Any member may do anything.
 - **(c)** Owner-only for all management actions.
+
+**ANSWERED: (a).** Implemented in Phase 6 — any active member may add, only an `OWNER` may remove
+somebody else, and anybody may leave. Leaving needs no permission because it takes access away
+rather than granting it; adding is open to any member because the alternative makes an owner on
+holiday a bottleneck for a team that needs somebody in the conversation. Renaming a group is not
+implemented and keeps the question open for whenever it is (docs/13-phase-6-group-chat.md §7-8).
+Reversible: it is four lines in `lib/conversations/service.ts`, and the tests state the rule.
+
+One rule was added that the options did not cover: if the **last owner leaves**, ownership passes
+to the longest-standing remaining member. Without it a group is left with nobody able to manage
+it and no way back short of direct SQL.
 
 ### Q-06b — File type allowlist · DECISION REQUIRED (Phase 7)
 `CLAUDE.md` lists PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, JPG/JPEG, PNG, TXT, ZIP. Should CSV be added?

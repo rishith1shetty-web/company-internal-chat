@@ -27,11 +27,14 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import {
   ApiError,
+  addGroupMembers as requestAddMembers,
+  createGroupConversation as requestGroup,
   fetchConversations,
   fetchDirectory,
   fetchMessages,
   fetchSession,
   markRead,
+  removeGroupMember as requestRemoveMember,
   startDirectConversation as requestDirectConversation,
 } from '@/lib/chat/api';
 import {
@@ -49,6 +52,12 @@ export interface ChatSession {
   state: ChatState;
   selectConversation(conversationId: string): void;
   startDirectConversation(userId: string): Promise<void>;
+  /** Create a group. The caller is its owner; the server decides that, not this call. */
+  createGroup(name: string, memberIds: string[]): Promise<void>;
+  /** Add colleagues to the open group. They see messages from this moment on, never before. */
+  addMembers(conversationId: string, userIds: string[]): Promise<void>;
+  /** Remove somebody from a group — or leave it, by naming yourself. */
+  removeMember(conversationId: string, userId: string): Promise<void>;
   /** Re-reads the colleague list, so a picker never opens on a stale directory. */
   refreshDirectory(): void;
   sendMessage(body: string): void;
@@ -327,6 +336,26 @@ export function useChatSession(): ChatSession {
         dispatch({ type: 'presence-changed', entries: [wire] });
       },
 
+      /*
+       * A group was created, somebody was added, or somebody left.
+       *
+       * The event says only which conversation, so everything is re-read through the authorized
+       * REST endpoints: the list (which is what makes a new group appear, a member list change,
+       * or a group the user has just left disappear), the open conversation's history (which is
+       * what shows the system message recording the change), and presence (because the people in
+       * a new group have only just become presence peers, and would otherwise sit at "offline"
+       * until something else moved).
+       */
+      onConversationChanged({ conversationId }) {
+        void (async () => {
+          await loadConversations();
+          if (openConversationRef.current === conversationId) {
+            await loadHistory(conversationId);
+          }
+          await syncPresence();
+        })();
+      },
+
       onServerError(error) {
         dispatch({ type: 'notice', message: error.message });
       },
@@ -397,6 +426,88 @@ export function useChatSession(): ChatSession {
       }
     },
     [handleFailure, loadHistory, syncPresence],
+  );
+
+  /**
+   * Creates a group and opens it.
+   *
+   * Everybody else is told by the server over the socket; this browser does not have to announce
+   * anything, and could not be trusted to if it did.
+   */
+  const createGroup = useCallback(
+    async (name: string, memberIds: string[]) => {
+      try {
+        const result = await requestGroup(name, memberIds);
+
+        knownConversationsRef.current.add(result.conversation.id);
+        dispatch({
+          type: 'conversation-opened',
+          conversation: result.conversation,
+          users: result.users,
+        });
+
+        // The room for a conversation created a moment ago did not exist when this socket
+        // connected, so it is joined explicitly rather than waited for.
+        await socketRef.current?.joinConversation(result.conversation.id);
+        await loadHistory(result.conversation.id);
+        await syncPresence();
+      } catch (error) {
+        handleFailure(error, 'Could not create that group.');
+      }
+    },
+    [handleFailure, loadHistory, syncPresence],
+  );
+
+  /** Adds colleagues to a group. Whether this user may is the server's decision. */
+  const addMembers = useCallback(
+    async (conversationId: string, userIds: string[]) => {
+      try {
+        const result = await requestAddMembers(conversationId, userIds);
+        if (result.conversation) {
+          dispatch({
+            type: 'conversation-opened',
+            conversation: result.conversation,
+            users: result.users,
+          });
+          await loadHistory(conversationId);
+        }
+        await syncPresence();
+      } catch (error) {
+        handleFailure(error, 'Could not add those colleagues to the group.');
+      }
+    },
+    [handleFailure, loadHistory, syncPresence],
+  );
+
+  /**
+   * Removes a member, or leaves the group when the id is the user's own.
+   *
+   * A null conversation in the answer means the caller is the one who left: the whole list is
+   * re-read, which drops the group and clears the selection, rather than trying to work out
+   * locally what is no longer visible.
+   */
+  const removeMember = useCallback(
+    async (conversationId: string, userId: string) => {
+      try {
+        const result = await requestRemoveMember(conversationId, userId);
+
+        if (result.conversation) {
+          dispatch({
+            type: 'conversation-opened',
+            conversation: result.conversation,
+            users: result.users,
+          });
+          await loadHistory(conversationId);
+        } else {
+          knownConversationsRef.current.delete(conversationId);
+          dispatch({ type: 'select-conversation', conversationId: null });
+          await loadConversations();
+        }
+      } catch (error) {
+        handleFailure(error, 'Could not change the group members.');
+      }
+    },
+    [handleFailure, loadConversations, loadHistory],
   );
 
   /**
@@ -536,6 +647,9 @@ export function useChatSession(): ChatSession {
     state,
     selectConversation,
     startDirectConversation,
+    createGroup,
+    addMembers,
+    removeMember,
     refreshDirectory,
     sendMessage,
     retryMessage,

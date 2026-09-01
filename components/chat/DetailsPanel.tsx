@@ -1,7 +1,7 @@
 'use client';
 
 import { Avatar } from '@/components/ui/Avatar';
-import { IconButton } from '@/components/ui/Button';
+import { Button, IconButton } from '@/components/ui/Button';
 import { CloseIcon, FileIcon } from '@/components/ui/icons';
 import {
   formatFullTimestamp,
@@ -17,14 +17,23 @@ interface DetailsPanelProps {
   currentUserId: string;
   usersById: Map<string, UserSummary>;
   onClose: () => void;
+  /** Groups only: open the colleague picker. */
+  onAddMembers: () => void;
+  /** Groups only: ask to remove somebody. Confirmed before anything is sent. */
+  onRequestRemove: (userId: string) => void;
 }
 
 /**
  * Conversation details: what this conversation is, and who is in it.
  *
- * Deliberately read-only in Phase 2. Group management — renaming, adding and removing members —
- * is Phase 6 and needs server-side authorization behind it, so no control for it is offered here
- * (CLAUDE.md §5, Phase 6).
+ * From Phase 6 it is also where a group is managed. The controls shown here are a convenience,
+ * never the authorization: the server re-derives who the caller is and what their role is on
+ * every request, so hiding "Remove" from a member is a courtesy to them and not a defence
+ * (CLAUDE.md §9). Showing a button somebody may not use would simply produce a refusal.
+ *
+ * What is NOT offered: renaming a group. It is listed for Phase 6 in the requirements
+ * (docs/00-phase-0-overview.md, F-15) but is not part of this phase's brief, and a control that
+ * writes `Conversation.name` needs the same role decision behind it that removal has.
  */
 export function DetailsPanel({
   conversation,
@@ -32,9 +41,15 @@ export function DetailsPanel({
   currentUserId,
   usersById,
   onClose,
+  onAddMembers,
+  onRequestRemove,
 }: DetailsPanelProps) {
   const allUsers = [...usersById.values()];
   const isGroup = conversation.type === 'GROUP';
+
+  // Read from the membership the server sent, not from anything decided in the browser.
+  const isOwner =
+    conversation.members.find((member) => member.userId === currentUserId)?.role === 'OWNER';
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
@@ -57,14 +72,24 @@ export function DetailsPanel({
         </section>
 
         <section className="mt-6">
-          <h3 className="text-xs font-semibold tracking-wide text-ink-subtle uppercase">
-            {isGroup ? `Members (${conversation.members.length})` : 'Participants'}
-          </h3>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold tracking-wide text-ink-subtle uppercase">
+              {isGroup ? `Members (${conversation.members.length})` : 'Participants'}
+            </h3>
+            {/* Any member may add (Q-05b option (a)); the server checks that they are one. */}
+            {isGroup ? (
+              <Button size="sm" onClick={onAddMembers}>
+                Add people
+              </Button>
+            ) : null}
+          </div>
 
           <ul className="mt-2 space-y-1">
             {conversation.members.map((member) => {
               const user = usersById.get(member.userId);
               if (!user) return null;
+
+              const removable = isGroup && isOwner && member.userId !== currentUserId;
 
               return (
                 <li key={member.userId} className="flex items-center gap-2.5 py-1.5">
@@ -91,15 +116,37 @@ export function DetailsPanel({
                       {formatPresence(user)}
                     </span>
                   </span>
+
+                  {removable ? (
+                    <Button
+                      size="sm"
+                      onClick={() => onRequestRemove(member.userId)}
+                      aria-label={`Remove ${user.displayName} from the group`}
+                    >
+                      Remove
+                    </Button>
+                  ) : null}
                 </li>
               );
             })}
           </ul>
 
           {isGroup ? (
-            <p className="mt-3 border-t border-line pt-3 text-xs text-ink-subtle">
-              Members see messages sent from the moment they joined the group onwards.
-            </p>
+            <div className="mt-3 border-t border-line pt-3">
+              <p className="text-xs text-ink-subtle">
+                Members see messages sent from the moment they joined the group onwards. Earlier
+                messages stay with the members who were here for them.
+              </p>
+
+              {/* Leaving needs no permission: it takes access away rather than granting it. */}
+              <Button
+                className="mt-3 w-full"
+                variant="danger"
+                onClick={() => onRequestRemove(currentUserId)}
+              >
+                Leave group
+              </Button>
+            </div>
           ) : null}
         </section>
 

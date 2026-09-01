@@ -6,9 +6,11 @@
  * — a token hash, a `leftAt`, an internal flag — ends up in a JSON response.
  */
 
-import type { ConversationSummary } from '@/lib/conversations/service';
+import type { PrismaClient } from '@/prisma/generated/client';
+import { listConversationsForUser, type ConversationSummary } from '@/lib/conversations/service';
 import type { DirectoryEntry } from '@/lib/users/directory';
-import type { ConversationWire, UserWire } from '@/lib/chat/wire';
+import type { ConversationMembersWire, ConversationWire, UserWire } from '@/lib/chat/wire';
+import { listUsersByIds } from '@/lib/users/directory';
 import type { StoredMessage } from '@/lib/messages/service';
 import type { MessageWire } from '@/lib/chat/wire';
 
@@ -64,4 +66,27 @@ export function memberIdsOf(conversations: readonly ConversationSummary[]): stri
     for (const member of conversation.members) ids.add(member.userId);
   }
   return [...ids];
+}
+
+/**
+ * One conversation, described exactly as the caller is entitled to see it.
+ *
+ * Read back through `listConversationsForUser` rather than assembled from whatever the operation
+ * just did: that is the same membership-filtered query the sidebar uses, so a response can never
+ * describe a conversation differently from the way the list will — and it comes back `null`,
+ * rather than leaking, when the caller is no longer a member. Which is precisely what leaving a
+ * group looks like from the leaver's side.
+ */
+export async function describeConversationFor(
+  db: PrismaClient,
+  userId: string,
+  conversationId: string,
+): Promise<ConversationMembersWire> {
+  const conversations = await listConversationsForUser(db, userId);
+  const conversation = conversations.find((item) => item.id === conversationId);
+
+  if (!conversation) return { conversation: null, users: [] };
+
+  const users = await listUsersByIds(db, memberIdsOf([conversation]));
+  return { conversation: toConversationWire(conversation), users: users.map(toUserWire) };
 }

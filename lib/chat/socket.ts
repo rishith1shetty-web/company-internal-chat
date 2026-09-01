@@ -21,6 +21,7 @@ import { io, type Socket } from 'socket.io-client';
 import { SOCKET_PATH } from '@/lib/chat/wire';
 import type {
   Ack,
+  ConversationChangedWire,
   JoinedConversationWire,
   MessageWire,
   PresenceWire,
@@ -41,6 +42,13 @@ export interface ChatSocketHandlers {
   onSessionReady(payload: SessionWire): void;
   onMessage(payload: MessageWire): void;
   onPresence(payload: PresenceWire): void;
+  /**
+   * A conversation this user is — or has just stopped being — a member of has changed.
+   *
+   * Carries only an id. The handler answers it by re-reading over REST, so nothing about the
+   * conversation is taken from the socket; this is a nudge, not a payload.
+   */
+  onConversationChanged(payload: ConversationChangedWire): void;
   /** An out-of-band failure, e.g. the session was revoked while the socket was open. */
   onServerError(payload: SocketError): void;
 }
@@ -92,6 +100,7 @@ export function createChatSocket(handlers: ChatSocketHandlers): ChatSocketClient
   socket.on('session:ready', handlers.onSessionReady);
   socket.on('message:new', handlers.onMessage);
   socket.on('presence:update', handlers.onPresence);
+  socket.on('conversation:changed', handlers.onConversationChanged);
   socket.on('server:error', handlers.onServerError);
 
   /**
