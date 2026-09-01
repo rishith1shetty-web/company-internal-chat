@@ -26,9 +26,10 @@ export function ConnectionNotice({ connection, notice, onDismissNotice }: Connec
     return (
       <div
         role="status"
-        className="flex shrink-0 items-center gap-2 border-b border-danger/25 bg-danger-tint px-3 py-1.5 sm:px-4"
+        className="flex shrink-0 items-center gap-2 border-b border-danger/20 bg-danger-tint px-3 py-2 sm:px-4"
       >
-        <p className="min-w-0 flex-1 truncate text-xs text-danger">{notice}</p>
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" aria-hidden="true" />
+        <p className="min-w-0 flex-1 truncate text-xs font-medium text-danger">{notice}</p>
         <IconButton label="Dismiss this message" onClick={onDismissNotice}>
           <CloseIcon className="h-4 w-4" />
         </IconButton>
@@ -41,8 +42,9 @@ export function ConnectionNotice({ connection, notice, onDismissNotice }: Connec
   return (
     <p
       role="status"
-      className="shrink-0 border-b border-notice/25 bg-notice-tint px-3 py-1.5 text-xs text-notice sm:px-4"
+      className="flex shrink-0 items-center gap-2 border-b border-notice/20 bg-notice-tint px-3 py-2 text-xs font-medium text-notice sm:px-4"
     >
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-notice" aria-hidden="true" />
       {connection === 'reconnecting'
         ? 'Reconnecting… messages you send now may not go through until the connection returns.'
         : 'Disconnected. Reload the page to reconnect.'}

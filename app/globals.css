@@ -1,55 +1,165 @@
 @import 'tailwindcss';
 
 /*
- * Application design tokens.
+ * Application design tokens — Rising Path Recruiters.
  *
  * One semantic palette, defined once, referenced everywhere as `bg-surface`, `text-ink-muted`,
  * `border-line` and so on. Components carry no raw hex values, so the whole interface can be
- * re-toned — including for a future company brand — by editing this block alone.
+ * re-toned by editing this block alone.
  *
- * Palette: corporate navy/slate neutrals with a single blue accent reserved for primary actions
- * and the current user's own messages. Every pairing below meets WCAG AA contrast for body text
- * on its intended background:
+ * THE PALETTE IS DERIVED FROM THE COMPANY LOGO, not chosen to look like it. The three hues below
+ * were sampled from public/brand/rising-path-recruiters.png:
  *
- *   ink        #0f172a on surface  17.0:1     accent  #0369a1 on surface  5.9:1
- *   ink-muted  #475569 on surface   7.4:1     surface #ffffff on accent   5.9:1
- *   ink-subtle #64748b on surface   4.8:1     danger  #b91c1c on surface  6.2:1
+ *   #A8682B   bronze   the wordmark
+ *   #F0A018   gold     the deeper end of the sun/arrow gradient
+ *   #F8C810   amber    the brighter end of it
+ *
+ * Those are brand colours, not usable colours: measured against white, bronze is 4.49:1 and gold
+ * is 2.15:1. Neither may carry body text. So each has a job it can actually do:
+ *
+ *   --color-brand    #A8682B  the logo bronze itself. Large text and non-text brand marks only.
+ *   --color-accent   #8A5220  bronze darkened until it is safe both ways (6.35:1 with white).
+ *                             Primary actions, own messages, selected rows.
+ *   --color-gold     #F0A018  a FILL, never a foreground. Dark ink on it is 8.07:1.
+ *
+ * Every pairing the interface actually uses, measured (WCAG 2.1 relative luminance):
+ *
+ *   ink        #23180E on surface  17.4:1     accent  #8A5220 on surface   6.4:1
+ *   ink-muted  #5C4B3A on surface   8.3:1     surface #ffffff on accent    6.4:1
+ *   ink-subtle #77634D on surface   5.7:1     ink     #23180E on gold      8.1:1
+ *   ink-subtle #77634D on canvas    5.1:1     danger  #B3261E on surface   6.5:1
+ *   ink-subtle #77634D on muted     5.4:1     online  #12805C on surface   4.9:1
  *
  * `ink-subtle` is the lightest text permitted, and only for secondary labels — nothing in the
- * interface is lighter than 4.5:1.
+ * interface is lighter than 5.1:1, comfortably past the 4.5:1 floor.
  */
 
 @theme {
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    sans-serif;
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  /* Numerals in timestamps, file sizes and counts, which must not jitter as they change. */
+  --font-numeric: ui-sans-serif, system-ui, 'Segoe UI Variable Text', 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Menlo, Consolas, monospace;
 
-  /* Surfaces */
-  --color-canvas: #f1f5f9;
+  /* ---- Surfaces: warm neutrals, so the whole interface belongs with the bronze ------------- */
+  --color-canvas: #f6f2ec;
+  --color-canvas-deep: #efe8dd;
   --color-surface: #ffffff;
-  --color-surface-muted: #f8fafc;
+  --color-surface-muted: #fbf8f3;
 
-  /* Lines */
-  --color-line: #e2e8f0;
-  --color-line-strong: #cbd5e1;
+  /* ---- Lines ------------------------------------------------------------------------------ */
+  --color-line: #e8dfd2;
+  --color-line-strong: #d5c7b4;
 
-  /* Text */
-  --color-ink: #0f172a;
-  --color-ink-muted: #475569;
-  --color-ink-subtle: #64748b;
+  /* ---- Text ------------------------------------------------------------------------------- */
+  --color-ink: #23180e;
+  --color-ink-muted: #5c4b3a;
+  --color-ink-subtle: #77634d;
 
-  /* Accent — primary actions and own messages only, never decoration */
-  --color-accent: #0369a1;
-  --color-accent-hover: #075985;
-  --color-accent-soft: #e0f2fe;
-  --color-accent-tint: #f0f9ff;
+  /* ---- Brand ------------------------------------------------------------------------------ */
+  /* The logo bronze, unmodified. 4.49:1 — headings and brand marks, never body text. */
+  --color-brand: #a8682b;
 
-  /* Status */
-  --color-danger: #b91c1c;
-  --color-danger-tint: #fef2f2;
-  --color-online: #059669;
-  --color-notice: #92400e;
-  --color-notice-tint: #fffbeb;
+  /* Accent — primary actions and own messages. Bronze taken to a safe contrast, both ways. */
+  --color-accent: #8a5220;
+  --color-accent-hover: #70411a;
+  --color-accent-soft: #f3e3ce;
+  --color-accent-tint: #faf3ea;
+
+  /* Gold — a fill and a highlight. Never a text colour on a light background. */
+  --color-gold: #f0a018;
+  --color-gold-bright: #f8c810;
+  --color-gold-deep: #b87309;
+  --color-gold-soft: #fdf3df;
+
+  /* ---- Status ----------------------------------------------------------------------------- */
+  --color-danger: #b3261e;
+  --color-danger-tint: #fdf2f1;
+  --color-online: #12805c;
+  --color-notice: #8a5a12;
+  --color-notice-tint: #fdf4e3;
+
+  /* ---- Avatar tints ------------------------------------------------------------------------
+   * One warm family drawn around the brand rather than six unrelated hues, so a room full of
+   * avatars still reads as one product. Every foreground is >= 4.5:1 on its own tint.
+   */
+  --color-tint-amber: #fbeccb;
+  --color-tint-amber-ink: #7a4c07;
+  --color-tint-bronze: #f2e3d2;
+  --color-tint-bronze-ink: #7a4a1c;
+  --color-tint-clay: #f8e2d8;
+  --color-tint-clay-ink: #8a3d1e;
+  --color-tint-olive: #e9ecd2;
+  --color-tint-olive-ink: #4f5a15;
+  --color-tint-teal: #d8ebe4;
+  --color-tint-teal-ink: #145c46;
+  --color-tint-sand: #efe6d3;
+  --color-tint-sand-ink: #6b552a;
+
+  /* ---- Radius ----------------------------------------------------------------------------- */
+  --radius-control: 0.625rem;
+  --radius-card: 0.875rem;
+  --radius-panel: 1.125rem;
+  --radius-bubble: 1.125rem;
+
+  /* ---- Elevation ---------------------------------------------------------------------------
+   * Warm-tinted rather than neutral black. A grey shadow over a warm surface reads as dirt;
+   * a bronze-tinted one reads as depth.
+   */
+  --shadow-subtle: 0 1px 2px 0 rgb(64 43 20 / 0.05);
+  --shadow-card: 0 1px 2px 0 rgb(64 43 20 / 0.04), 0 2px 8px -2px rgb(64 43 20 / 0.08);
+  --shadow-raised: 0 2px 4px -1px rgb(64 43 20 / 0.06), 0 8px 20px -6px rgb(64 43 20 / 0.14);
+  --shadow-overlay: 0 8px 16px -6px rgb(64 43 20 / 0.12), 0 24px 48px -12px rgb(64 43 20 / 0.22);
+  --shadow-bubble: 0 1px 1px 0 rgb(64 43 20 / 0.05);
+
+  /* ---- Motion ------------------------------------------------------------------------------
+   * Two durations and one curve, shared by everything, so no two controls animate differently.
+   * Short, because every animation here is feedback on a click — none of it is decoration.
+   */
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --duration-quick: 120ms;
+  --duration-settle: 220ms;
+
+  /*
+   * A dialog grows very slightly out of the middle of the screen instead of appearing there.
+   * 4% and 8px: enough to say "this arrived", far short of anything that has to be waited for.
+   * The backdrop fades on its own, faster, so the dialog is never behind an opaque wash.
+   */
+  --animate-dialog-in: dialog-in var(--duration-settle) var(--ease-out-soft);
+  --animate-backdrop-in: backdrop-in var(--duration-quick) var(--ease-out-soft);
+  --animate-rise-in: rise-in var(--duration-settle) var(--ease-out-soft);
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @layer base {
@@ -62,11 +172,61 @@
     /* Body copy at 16px/1.5; the denser chat surfaces step down deliberately, never below 14px. */
     font-size: 1rem;
     line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /*
+   * Timestamps, file sizes and unread counts change in place. Proportional digits make them
+   * twitch as they do; tabular ones hold their column.
+   */
+  time,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Long filenames, ids and pasted URLs reflow instead of forcing the page sideways. */
+  [data-wrap-anywhere] {
+    overflow-wrap: anywhere;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-soft);
+    color: var(--color-ink);
+  }
+
+  /*
+   * Scrollbars in the conversation list, message history and details panel. Thin and warm, so a
+   * long conversation does not have a grey stripe down the side of a bronze interface.
+   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-ink-subtle);
   }
 
   /*
    * Respect the operating-system reduced-motion setting. The interface uses only short colour
-   * transitions, but a user who has asked for stillness gets stillness.
+   * and transform transitions, but a user who has asked for stillness gets stillness.
    */
   @media (prefers-reduced-motion: reduce) {
     *,
@@ -78,4 +238,47 @@
       scroll-behavior: auto !important;
     }
   }
+}
+
+/*
+ * The message area.
+ *
+ * Two very faint radial washes in the logo's own hues, so the conversation sits on something
+ * warm rather than on flat grey. Pure CSS — no image request, nothing to load, and nothing that
+ * competes with the messages: both stops are under 6% alpha.
+ */
+@utility chat-canvas {
+  background-color: var(--color-canvas);
+  background-image:
+    radial-gradient(75rem 40rem at 12% -10%, rgb(240 160 24 / 0.06), transparent 60%),
+    radial-gradient(60rem 36rem at 92% 108%, rgb(168 104 43 / 0.05), transparent 62%);
+  /*
+   * The default `scroll`, stated rather than assumed. On a scroll container that means the wash
+   * is painted against the box and stays put while the conversation moves over it. `local` would
+   * drag it along with the messages, so a long history would scroll the light out of the top of
+   * the panel and leave a flat grey behind it.
+   */
+  background-attachment: scroll;
+  background-repeat: no-repeat;
+}
+
+/* The brand gradient, taken from the sun in the logo. Used behind the mark, never behind text. */
+@utility brand-gradient {
+  background-image: linear-gradient(135deg, var(--color-gold-bright) 0%, var(--color-brand) 100%);
+}
+
+/*
+ * A hairline of gold under the application header.
+ *
+ * The one place the brand's brightest colour appears as a flat band. It is 2px of decoration
+ * doing a real job: it separates the header from the conversation without another grey border.
+ */
+@utility brand-rule {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-brand) 0%,
+    var(--color-gold) 42%,
+    var(--color-gold-bright) 68%,
+    var(--color-gold) 100%
+  );
 }

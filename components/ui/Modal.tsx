@@ -80,8 +80,13 @@ export function Modal({ open, title, description, onClose, children, footer }: M
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/*
+        The backdrop is blurred as well as darkened. That is the convention for "the thing behind
+        this is not available right now" (Apple HIG), and it stops a busy conversation competing
+        for attention with the dialog sitting on top of it.
+      */}
       <div
-        className="absolute inset-0 bg-ink/40"
+        className="absolute inset-0 animate-backdrop-in bg-ink/45 backdrop-blur-[2px]"
         onClick={onClose}
         role="presentation"
         aria-hidden="true"
@@ -92,15 +97,18 @@ export function Modal({ open, title, description, onClose, children, footer }: M
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
-        className="relative flex max-h-[90vh] w-full max-w-lg flex-col rounded-lg bg-surface shadow-xl"
+        className={
+          'relative flex max-h-[90vh] w-full max-w-lg animate-dialog-in flex-col ' +
+          'rounded-panel border border-line bg-surface shadow-overlay'
+        }
       >
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div>
-            <h2 id={titleId} className="text-base font-semibold text-ink">
+          <div className="min-w-0">
+            <h2 id={titleId} className="text-base font-semibold tracking-tight text-ink">
               {title}
             </h2>
             {description ? (
-              <p id={descriptionId} className="mt-1 text-sm text-ink-muted">
+              <p id={descriptionId} className="mt-1 text-sm break-words text-ink-muted">
                 {description}
               </p>
             ) : null}
@@ -113,7 +121,9 @@ export function Modal({ open, title, description, onClose, children, footer }: M
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
 
         {footer ? (
-          <div className="flex justify-end gap-2 border-t border-line px-5 py-3">{footer}</div>
+          <div className="flex justify-end gap-2 rounded-b-panel border-t border-line bg-surface-muted px-5 py-3.5">
+            {footer}
+          </div>
         ) : null}
       </div>
     </div>

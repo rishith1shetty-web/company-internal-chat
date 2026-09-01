@@ -112,7 +112,7 @@ export function MessageComposer({
   return (
     <form
       onSubmit={submit}
-      className="shrink-0 border-t border-line bg-surface px-3 py-3 sm:px-6"
+      className="shrink-0 border-t border-line bg-surface px-3 py-3 shadow-[0_-1px_2px_0_rgb(64_43_20/0.03)] sm:px-6"
     >
       <div className="mx-auto max-w-3xl">
         {/*
@@ -130,9 +130,9 @@ export function MessageComposer({
         />
 
         {file ? (
-          <div className="mb-2 flex items-center gap-3 rounded-lg border border-line bg-surface-muted px-3 py-2">
+          <div className="mb-2 flex animate-rise-in items-center gap-3 rounded-card border border-accent/20 bg-accent-tint px-3 py-2.5 shadow-subtle">
             <span
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface text-ink-muted"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-surface text-brand ring-1 ring-line"
               aria-hidden="true"
             >
               <FileIcon className="h-4 w-4" />
@@ -157,7 +157,19 @@ export function MessageComposer({
           </p>
         ) : null}
 
-        <div className="flex items-end gap-2 rounded-lg border border-line-strong bg-surface px-2 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25">
+        {/*
+          The whole row is the field, not just the textarea inside it: focus lights up the
+          container so the paperclip and Send read as part of one control rather than three
+          controls that happen to be adjacent.
+        */}
+        <div
+          className={
+            'flex items-end gap-2 rounded-panel border border-line-strong bg-surface-muted px-2 py-1.5 ' +
+            'shadow-subtle transition-[border-color,box-shadow,background-color] ' +
+            'duration-(--duration-quick) ease-(--ease-out-soft) ' +
+            'focus-within:border-accent focus-within:bg-surface focus-within:ring-4 focus-within:ring-accent/12'
+          }
+        >
           <IconButton
             label="Attach a file"
             onClick={() => fileInputRef.current?.click()}
@@ -204,10 +216,11 @@ export function MessageComposer({
           </Button>
         </div>
 
-        <div className="mt-1.5 flex items-center justify-between gap-3">
+        <div className="mt-2 flex items-center justify-between gap-3">
           <p id="composer-hint" className="text-xs text-ink-subtle">
-            Enter sends · Shift + Enter adds a line · any file up to{' '}
-            {formatFileSize(maxFileSize)}
+            <kbd className="font-sans font-medium text-ink-muted">Enter</kbd> sends ·{' '}
+            <kbd className="font-sans font-medium text-ink-muted">Shift + Enter</kbd> adds a line ·
+            any file up to {formatFileSize(maxFileSize)}
           </p>
           {body.length >= COUNTER_VISIBLE_FROM ? (
             <p className={tooLong ? 'text-xs font-medium text-danger' : 'text-xs text-ink-subtle'}>

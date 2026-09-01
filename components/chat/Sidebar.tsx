@@ -32,23 +32,27 @@ export function Sidebar({
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
       <div className="shrink-0 border-b border-line px-3 py-3">
-        <div className="flex items-center justify-between gap-2 md:hidden">
+        <div className="mb-2 flex items-center justify-between gap-2 md:hidden">
           <h2 className="text-sm font-semibold text-ink">Conversations</h2>
           <IconButton label="Close conversation list" onClick={onClose}>
             <CloseIcon />
           </IconButton>
         </div>
 
+        {/* Section label on desktop, where the mobile heading above is hidden. */}
+        <p className="mb-2 hidden text-xs font-semibold tracking-wider text-ink-subtle uppercase md:block">
+          Conversations
+        </p>
+
         <SearchField
           label="Search conversations and people"
           placeholder="Search conversations"
           value={searchTerm}
           onChange={(event) => onSearchChange(event.target.value)}
-          className="mt-2 md:mt-0"
         />
 
         <div className="mt-2 flex gap-2">
-          <Button size="sm" onClick={onNewChat} className="flex-1">
+          <Button variant="primary" size="sm" onClick={onNewChat} className="flex-1">
             <NewChatIcon className="h-4 w-4" />
             New chat
           </Button>
@@ -59,7 +63,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto" aria-label="Conversation list">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-2" aria-label="Conversation list">
         <ConversationList
           entries={entries}
           selectedConversationId={selectedConversationId}
@@ -72,7 +76,7 @@ export function Sidebar({
         What the application can do, stated plainly. Every one of these is real and persistent:
         there is no longer a control here that says it is waiting for a later phase.
       */}
-      <p className="shrink-0 border-t border-line px-3 py-2 text-xs text-ink-subtle">
+      <p className="shrink-0 border-t border-line bg-surface-muted px-3 py-2.5 text-xs text-ink-subtle">
         One-to-one and group chat · file transfer
       </p>
     </div>

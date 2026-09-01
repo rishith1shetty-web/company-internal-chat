@@ -1,7 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/Button';
-import { FileIcon } from '@/components/ui/icons';
+import { DownloadIcon, FileIcon } from '@/components/ui/icons';
 import { attachmentDownloadUrl } from '@/lib/chat/api';
 import { formatFileSize, fileTypeLabel } from '@/lib/chat/format';
 import type { AttachmentSummary, PendingUpload } from '@/lib/chat/types';
@@ -36,17 +36,18 @@ export function AttachmentCard({
        */
       download={attachment.filename}
       className={cn(
-        'flex max-w-full items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors',
-        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+        'group flex max-w-full items-center gap-3 rounded-card border px-3 py-2.5',
+        'transition-[background-color,border-color,box-shadow] duration-(--duration-quick) ease-(--ease-out-soft)',
+        'focus-visible:outline-2 focus-visible:outline-offset-2',
         isOwn
-          ? 'border-white/25 bg-white/10 hover:bg-white/20'
-          : 'border-line bg-surface hover:bg-surface-muted',
+          ? 'border-white/25 bg-white/12 hover:bg-white/22 focus-visible:outline-white'
+          : 'border-line bg-surface hover:border-accent/30 hover:bg-accent-tint hover:shadow-subtle focus-visible:outline-accent',
       )}
     >
       <span
         className={cn(
-          'flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-lg',
-          isOwn ? 'bg-white/15 text-white' : 'bg-canvas text-ink-muted',
+          'flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-control',
+          isOwn ? 'bg-white/18 text-white' : 'bg-gold-soft text-brand ring-1 ring-brand/12 ring-inset',
         )}
         aria-hidden="true"
       >
@@ -66,10 +67,23 @@ export function AttachmentCard({
         >
           {attachment.filename}
         </span>
-        <span className={cn('block text-xs', isOwn ? 'text-white/75' : 'text-ink-subtle')}>
-          {formatFileSize(attachment.byteSize)} · Download
+        <span
+          className={cn(
+            'block text-xs tabular-nums',
+            isOwn ? 'text-white/80' : 'text-ink-subtle',
+          )}
+        >
+          {formatFileSize(attachment.byteSize)} ·{' '}
+          <span className={cn('font-medium', !isOwn && 'text-brand')}>Download</span>
         </span>
       </span>
+
+      <DownloadIcon
+        className={cn(
+          'h-4 w-4 shrink-0 transition-transform duration-(--duration-quick) group-hover:translate-y-0.5',
+          isOwn ? 'text-white/80' : 'text-ink-subtle',
+        )}
+      />
     </a>
   );
 }
@@ -97,14 +111,17 @@ export function UploadCard({
   return (
     <div
       className={cn(
-        'mt-3 ml-auto flex max-w-[min(28rem,80%)] items-center gap-3 rounded-xl border px-3 py-2.5',
-        failed ? 'border-danger/50 bg-danger/5' : 'border-line bg-surface',
+        'mt-3 ml-auto flex max-w-[min(28rem,80%)] animate-rise-in items-center gap-3 rounded-card border px-3 py-2.5 shadow-subtle',
+        failed ? 'border-danger/45 bg-danger-tint' : 'border-line bg-surface',
       )}
       role="status"
       aria-live="polite"
     >
       <span
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-canvas text-ink-muted"
+        className={cn(
+          'flex h-10 w-10 shrink-0 items-center justify-center rounded-control ring-1 ring-inset',
+          failed ? 'bg-danger/8 text-danger ring-danger/15' : 'bg-gold-soft text-brand ring-brand/12',
+        )}
         aria-hidden="true"
       >
         <FileIcon className="h-4 w-4" />
@@ -116,14 +133,20 @@ export function UploadCard({
         </span>
 
         {failed ? (
-          <span className="block text-xs text-danger">{upload.error ?? 'Not sent.'}</span>
+          <span className="block text-xs font-medium text-danger">
+            {upload.error ?? 'Not sent.'}
+          </span>
         ) : (
           <>
-            <span className="block text-xs text-ink-subtle">
+            <span className="block text-xs text-ink-subtle tabular-nums">
               {formatFileSize(upload.byteSize)} · Uploading… {percent}%
             </span>
+            {/*
+              The bar is the brand gradient, filled to the bytes the browser has actually handed
+              to the network. It is never animated to look busy when nothing is known.
+            */}
             <span
-              className="mt-1.5 block h-1 w-full overflow-hidden rounded-full bg-line"
+              className="mt-1.5 block h-1.5 w-full overflow-hidden rounded-full bg-canvas-deep"
               role="progressbar"
               aria-valuenow={percent}
               aria-valuemin={0}
@@ -131,7 +154,7 @@ export function UploadCard({
               aria-label={`Uploading ${upload.filename}`}
             >
               <span
-                className="block h-full rounded-full bg-accent transition-[width] duration-200"
+                className="brand-gradient block h-full rounded-full transition-[width] duration-(--duration-settle) ease-(--ease-out-soft)"
                 style={{ width: `${percent}%` }}
               />
             </span>

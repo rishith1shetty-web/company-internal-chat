@@ -10,7 +10,8 @@
 import { EnrollmentScreen } from '@/components/admin/EnrollmentScreen';
 
 export const metadata = {
-  title: 'Computer setup · Company Internal Chat',
+  // The root layout's title template appends the company name.
+  title: 'Computer setup',
   robots: { index: false, follow: false },
 };
 

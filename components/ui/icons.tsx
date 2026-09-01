@@ -138,3 +138,22 @@ export function LockIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** Affordance on a file card: says "this saves to your computer" before it is clicked. */
+export function DownloadIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5" />
+      <path d="M4.5 17.5V19a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-1.5" />
+    </Svg>
+  );
+}
+
+/** Marks the group-management area in the details panel. */
+export function ShieldIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3.5 5 6.2v5.1c0 4 2.9 7.6 7 9.2 4.1-1.6 7-5.2 7-9.2V6.2L12 3.5Z" />
+    </Svg>
+  );
+}

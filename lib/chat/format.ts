@@ -22,14 +22,19 @@ export function initials(displayName: string): string {
 /**
  * Stable avatar tint derived from the user id, so the same person always looks the same.
  * Keyed on the id rather than the name because names are not unique (D-02).
+ *
+ * One warm family drawn around the company bronze rather than six unrelated hues: a group
+ * conversation shows six of these at once, and a rainbow of stock Tailwind colours is the thing
+ * that makes an otherwise composed interface look assembled from parts. Each pair is a token
+ * defined in app/globals.css, and each foreground is at least 4.5:1 on its own tint.
  */
 const AVATAR_TINTS = [
-  'bg-blue-100 text-blue-800',
-  'bg-emerald-100 text-emerald-800',
-  'bg-amber-100 text-amber-800',
-  'bg-violet-100 text-violet-800',
-  'bg-rose-100 text-rose-800',
-  'bg-teal-100 text-teal-800',
+  'bg-tint-amber text-tint-amber-ink',
+  'bg-tint-bronze text-tint-bronze-ink',
+  'bg-tint-clay text-tint-clay-ink',
+  'bg-tint-olive text-tint-olive-ink',
+  'bg-tint-teal text-tint-teal-ink',
+  'bg-tint-sand text-tint-sand-ink',
 ] as const;
 
 export function avatarTint(userId: string): string {

@@ -4,9 +4,10 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 
+import { BrandLockup } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/Field';
-import { LockIcon } from '@/components/ui/icons';
+import { CheckIcon, LockIcon } from '@/components/ui/icons';
 import { redeemEnrollmentCode } from '@/lib/admin/api';
 import { ApiError } from '@/lib/chat/api';
 
@@ -49,16 +50,32 @@ export function EnrollmentScreen({ initialCode }: { initialCode: string }) {
   };
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-canvas px-4 py-10">
+    <main className="chat-canvas flex min-h-dvh items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
-        <p className="mb-4 text-xs font-medium tracking-wide text-ink-subtle uppercase">
-          Company Internal Chat · Computer setup
-        </p>
+        {/*
+          Setup runs on a machine nobody is signed in to, so the logo is doing real work here: it
+          is the only thing telling whoever is at the keyboard that this is the company's own
+          system and not a page that has asked them for a code.
+        */}
+        <div className="mb-6 flex flex-col items-center">
+          <BrandLockup width={200} className="h-auto w-[200px]" priority />
+          <p className="mt-3 text-xs font-semibold tracking-wider text-ink-subtle uppercase">
+            Computer setup
+          </p>
+        </div>
 
-        <div className="rounded-lg border border-line bg-surface p-6 shadow-sm">
+        <div className="overflow-hidden rounded-panel border border-line bg-surface shadow-card">
+          <div className="brand-rule h-1 w-full" aria-hidden="true" />
+          <div className="p-6 sm:p-7">
           {done ? (
             <>
-              <h1 className="text-base font-semibold text-ink">
+              <span
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-gold-soft text-brand ring-1 ring-brand/12 ring-inset"
+                aria-hidden="true"
+              >
+                <CheckIcon className="h-5 w-5" />
+              </span>
+              <h1 className="mt-4 text-lg font-semibold tracking-tight text-ink">
                 {done.deviceLabel} is ready
               </h1>
               <p className="mt-2 text-sm text-ink-muted">
@@ -72,7 +89,9 @@ export function EnrollmentScreen({ initialCode }: { initialCode: string }) {
             </>
           ) : (
             <form onSubmit={submit} noValidate>
-              <h1 className="text-base font-semibold text-ink">Set up this computer</h1>
+              <h1 className="text-lg font-semibold tracking-tight text-ink">
+                Set up this computer
+              </h1>
               <p className="mt-2 text-sm text-ink-muted">
                 For IT. Enter the setup code from the administration page to link this computer to
                 the employee it has been assigned to.
@@ -111,7 +130,12 @@ export function EnrollmentScreen({ initialCode }: { initialCode: string }) {
               </p>
             </form>
           )}
+          </div>
         </div>
+
+        <p className="mt-5 text-center text-xs text-ink-subtle">
+          Rising Path Recruiters · internal system
+        </p>
       </div>
     </main>
   );

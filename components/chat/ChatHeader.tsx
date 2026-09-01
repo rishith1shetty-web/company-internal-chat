@@ -1,6 +1,6 @@
 'use client';
 
-import { Avatar } from '@/components/ui/Avatar';
+import { Avatar, GroupAvatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { GroupIcon, InfoIcon } from '@/components/ui/icons';
 import { UserPresenceLine } from '@/components/chat/ConversationList';
@@ -27,7 +27,7 @@ export function ChatHeader({
   onToggleDetails,
 }: ChatHeaderProps) {
   return (
-    <div className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-3 sm:px-4">
+    <div className="flex h-15 shrink-0 items-center gap-3 border-b border-line bg-surface/85 px-3 backdrop-blur-sm sm:px-4">
       {counterpart ? (
         <Avatar
           userId={counterpart.id}
@@ -35,13 +35,13 @@ export function ChatHeader({
           presence={counterpart.presence}
         />
       ) : (
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-canvas text-ink-muted">
+        <GroupAvatar>
           <GroupIcon className="h-5 w-5" />
-        </span>
+        </GroupAvatar>
       )}
 
       <div className="min-w-0 flex-1">
-        <h2 className="truncate text-sm font-semibold text-ink">
+        <h2 className="truncate text-sm font-semibold tracking-tight text-ink">
           {title}
           {counterpart && showDiscriminator ? (
             <span className="ml-1.5 text-xs font-normal text-ink-subtle">

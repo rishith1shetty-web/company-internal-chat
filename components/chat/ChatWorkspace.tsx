@@ -19,6 +19,7 @@ import { Sidebar } from '@/components/chat/Sidebar';
 import { SettingsDialog } from '@/components/chat/SystemDialogs';
 import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { BrandLockup } from '@/components/brand/Logo';
 import { hasNameCollision } from '@/lib/chat/format';
 import {
   conversationTitle,
@@ -111,7 +112,8 @@ export function ChatWorkspace() {
 
   if (state.screen === 'loading') {
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-canvas px-4">
+      <main className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-canvas px-4">
+        <BrandLockup width={168} className="h-auto w-[168px] opacity-90" priority />
         <p className="text-sm text-ink-muted" role="status">
           Loading your conversations…
         </p>
@@ -191,7 +193,7 @@ export function ChatWorkspace() {
     <div className="flex h-dvh flex-col bg-canvas text-ink">
       <a
         href="#conversation"
-        className="sr-only rounded-md bg-accent px-3 py-2 text-sm text-white focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50"
+        className="sr-only rounded-control bg-accent px-3 py-2 text-sm font-medium text-white shadow-raised focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50"
       >
         Skip to conversation
       </a>
@@ -214,7 +216,7 @@ export function ChatWorkspace() {
         {/* Conversation sidebar: a column on desktop, an overlay on small screens. */}
         {sidebarOpen ? (
           <div
-            className="absolute inset-0 z-20 bg-ink/40 md:hidden"
+            className="absolute inset-0 z-20 animate-backdrop-in bg-ink/45 backdrop-blur-[2px] md:hidden"
             onClick={() => setSidebarOpen(false)}
             role="presentation"
           />
@@ -222,7 +224,7 @@ export function ChatWorkspace() {
 
         <aside
           className={cn(
-            'absolute inset-y-0 left-0 z-30 w-80 max-w-[85vw] shrink-0 border-r border-line shadow-lg',
+            'absolute inset-y-0 left-0 z-30 w-80 max-w-[85vw] shrink-0 border-r border-line shadow-overlay',
             'md:static md:z-auto md:w-72 md:max-w-none md:shadow-none lg:w-80',
             sidebarOpen ? 'block' : 'hidden md:block',
           )}
@@ -293,12 +295,12 @@ export function ChatWorkspace() {
         {selectedConversation && detailsOpen ? (
           <>
             <div
-              className="absolute inset-0 z-20 bg-ink/40 xl:hidden"
+              className="absolute inset-0 z-20 animate-backdrop-in bg-ink/45 backdrop-blur-[2px] xl:hidden"
               onClick={() => setDetailsOverride(false)}
               role="presentation"
             />
             <aside
-              className="absolute inset-y-0 right-0 z-30 w-80 max-w-[85vw] border-l border-line shadow-lg xl:static xl:z-auto xl:max-w-none xl:shadow-none"
+              className="absolute inset-y-0 right-0 z-30 w-80 max-w-[85vw] border-l border-line shadow-overlay xl:static xl:z-auto xl:max-w-none xl:shadow-none"
               aria-label="Conversation details"
             >
               <DetailsPanel

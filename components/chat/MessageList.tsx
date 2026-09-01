@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { AttachmentCard, UploadCard } from '@/components/chat/AttachmentCard';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
+import { ChatIcon } from '@/components/ui/icons';
 import { formatDayLabel, formatFullTimestamp, formatTime } from '@/lib/chat/format';
 import type { ChatMessage, PendingUpload, UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
@@ -62,18 +63,26 @@ export function MessageList({
   // into the empty state and hide it.
   if (messages.length === 0 && uploads.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
-        <p className="max-w-sm text-center text-sm text-ink-subtle" role="status">
-          {loading || !loaded
-            ? 'Loading messages…'
-            : 'No messages in this conversation yet. Write the first one below.'}
-        </p>
+      <div className="chat-canvas flex min-h-0 flex-1 items-center justify-center px-6 py-10">
+        <div className="max-w-sm text-center" role="status">
+          <span
+            className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface text-brand shadow-subtle"
+            aria-hidden="true"
+          >
+            <ChatIcon className="h-5 w-5" />
+          </span>
+          <p className="mt-3 text-sm text-ink-muted">
+            {loading || !loaded
+              ? 'Loading messages…'
+              : 'No messages here yet. Write the first one below.'}
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-6">
+    <div className="chat-canvas flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-6">
       {/* `mt-auto` keeps a short conversation resting on the composer rather than floating. */}
       <ol className="mx-auto mt-auto flex w-full max-w-3xl flex-col gap-1" aria-label="Messages">
         {hasOlderMessages ? (
@@ -161,14 +170,21 @@ function buildRows(messages: readonly ChatMessage[]): MessageRow[] {
   });
 }
 
+/**
+ * Date separator.
+ *
+ * A floating pill rather than a rule across the column: the message area has a tinted background,
+ * and a hairline drawn across it reads as a crack in the surface.
+ */
 function DayDivider({ label }: { label: string }) {
   return (
-    <div className="my-4 flex items-center gap-3">
-      <span className="h-px flex-1 bg-line" />
-      <span className="text-xs font-medium text-ink-subtle" suppressHydrationWarning>
+    <div className="my-4 flex justify-center">
+      <span
+        className="rounded-full border border-line bg-surface/80 px-3 py-1 text-[11px] font-semibold tracking-wide text-ink-muted uppercase shadow-subtle backdrop-blur-sm"
+        suppressHydrationWarning
+      >
         {label}
       </span>
-      <span className="h-px flex-1 bg-line" />
     </div>
   );
 }
@@ -179,8 +195,10 @@ function DayDivider({ label }: { label: string }) {
  */
 function SystemMessage({ message }: { message: ChatMessage }) {
   return (
-    <p className="my-3 text-center text-xs text-ink-subtle">
-      <span className="rounded-full bg-canvas px-3 py-1">{message.body}</span>
+    <p className="my-3 text-center">
+      <span className="inline-block rounded-full border border-line bg-surface/70 px-3 py-1 text-xs text-ink-muted">
+        {message.body}
+      </span>
     </p>
   );
 }
@@ -232,15 +250,21 @@ function MessageBubble({
 
       <div className={cn('max-w-[min(42rem,80%)]', isOwn && 'items-end')}>
         {!isOwn && showSenderName && !grouped ? (
-          <p className="mb-1 text-xs font-medium text-ink-muted">{senderName}</p>
+          <p className="mb-1 text-xs font-semibold text-brand">{senderName}</p>
         ) : null}
 
+        {/*
+          Own messages are the company bronze with white on it (6.4:1); everyone else's are white
+          with a hairline. The "tail" is the one corner that stays square on the side the message
+          came from — the cheapest way to say who sent it without a drawn pointer.
+        */}
         <div
           className={cn(
-            'rounded-2xl px-3.5 py-2 text-[0.9375rem] leading-6 break-words whitespace-pre-wrap',
+            'rounded-bubble px-3.5 py-2 text-[0.9375rem] leading-6 break-words whitespace-pre-wrap',
+            'shadow-bubble transition-shadow duration-(--duration-quick)',
             isOwn
-              ? 'rounded-br-sm bg-accent text-white'
-              : 'rounded-bl-sm border border-line bg-surface text-ink',
+              ? 'rounded-br-md bg-accent text-white'
+              : 'rounded-bl-md border border-line bg-surface text-ink',
             // Not yet acknowledged by the server, and shown as such rather than as delivered.
             sending && 'opacity-70',
             failed && 'ring-2 ring-danger/60',

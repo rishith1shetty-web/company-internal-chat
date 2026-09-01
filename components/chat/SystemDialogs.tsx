@@ -2,63 +2,8 @@
 
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import { AttachmentIcon, FileIcon, LockIcon } from '@/components/ui/icons';
 import { userDiscriminator } from '@/lib/chat/format';
 import type { UserSummary } from '@/lib/chat/types';
-
-/**
- * File attachment placeholder.
- *
- * The control exists in the composer from Phase 2 so the layout is settled, but no file is
- * selected, read, uploaded or stored — file transfer is Phase 7. The dialog states the rules
- * the feature will be built to (size ceiling, type allowlist, download-only) rather than
- * pretending to do something.
- */
-export function AttachmentDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return (
-    <Modal
-      open={open}
-      title="File transfer arrives in a later phase"
-      description="The attachment control is in place, but uploads are not implemented yet."
-      onClose={onClose}
-      footer={
-        <Button variant="primary" onClick={onClose}>
-          Close
-        </Button>
-      }
-    >
-      <p className="text-sm text-ink-muted">
-        When file transfer is implemented, sending a file from this conversation will work like
-        this:
-      </p>
-
-      <ul className="mt-3 space-y-2.5 text-sm text-ink-muted">
-        <PlannedItem icon={<AttachmentIcon className="h-4 w-4" />}>
-          Common business formats are accepted — PDF, Word, Excel, PowerPoint, images, text and
-          ZIP — checked against both the file extension and the actual file contents.
-        </PlannedItem>
-        <PlannedItem icon={<FileIcon className="h-4 w-4" />}>
-          Files up to the configured size limit, with upload progress shown and a clear message if
-          an upload fails.
-        </PlannedItem>
-        <PlannedItem icon={<LockIcon className="h-4 w-4" />}>
-          Files are stored on company storage and downloaded through the application, which checks
-          that you are a member of the conversation first. Files are download-only — nothing
-          uploaded is ever opened inside this page.
-        </PlannedItem>
-      </ul>
-    </Modal>
-  );
-}
-
-function PlannedItem({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <li className="flex gap-2.5">
-      <span className="mt-0.5 shrink-0 text-ink-subtle">{icon}</span>
-      <span>{children}</span>
-    </li>
-  );
-}
 
 /**
  * Settings.

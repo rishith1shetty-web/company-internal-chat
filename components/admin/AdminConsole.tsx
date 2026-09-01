@@ -16,6 +16,7 @@ import {
   renameDevice,
   revokeDevice,
 } from '@/lib/admin/api';
+import { BrandLockup, BrandLockupInline } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
@@ -109,8 +110,8 @@ export function AdminConsole() {
     <Shell>
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-lg font-semibold text-ink">Company computers</h1>
-          <p className="mt-1 text-sm text-ink-muted">
+          <h1 className="text-xl font-semibold tracking-tight text-ink">Company computers</h1>
+          <p className="mt-1.5 text-sm text-ink-muted">
             Each computer is assigned to one employee. Whoever sits at it is recognised as that
             person — there is no sign-in and nothing for them to change.
           </p>
@@ -130,7 +131,10 @@ export function AdminConsole() {
       </div>
 
       {error ? (
-        <p className="mt-4 rounded-md bg-danger-tint px-3 py-2 text-sm text-danger" role="alert">
+        <p
+          className="mt-4 rounded-card bg-danger-tint px-3 py-2.5 text-sm font-medium text-danger ring-1 ring-danger/20 ring-inset"
+          role="alert"
+        >
           {error}
         </p>
       ) : null}
@@ -156,16 +160,35 @@ export function AdminConsole() {
   );
 }
 
+/**
+ * Admin chrome.
+ *
+ * A real header bar with the company mark in it, over a warm page, then one card for the work —
+ * the layout a person recognises as an internal console rather than a form on a blank page. The
+ * mark here is the compact one, not the full lockup: the console is a place of work somebody
+ * returns to daily, and a wordmark at the top of every visit is a banner rather than an aid.
+ */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-dvh bg-canvas px-4 py-8">
-      <div className="mx-auto w-full max-w-4xl">
-        <p className="mb-4 text-xs font-medium tracking-wide text-ink-subtle uppercase">
-          Company Internal Chat · Administration
-        </p>
-        <div className="rounded-lg border border-line bg-surface p-6 shadow-sm">{children}</div>
-      </div>
-    </main>
+    <div className="flex min-h-dvh flex-col bg-canvas">
+      <header className="shrink-0">
+        <div className="flex h-15 items-center justify-between gap-3 bg-surface px-4">
+          <BrandLockupInline subtitle="Administration" />
+          <span className="hidden rounded-full bg-accent-tint px-2.5 py-1 text-xs font-semibold text-accent ring-1 ring-accent/20 ring-inset sm:inline-block">
+            Internal tool
+          </span>
+        </div>
+        <div className="brand-rule h-0.5 w-full" aria-hidden="true" />
+      </header>
+
+      <main className="flex-1 px-4 py-8">
+        <div className="mx-auto w-full max-w-4xl">
+          <div className="rounded-panel border border-line bg-surface p-6 shadow-card sm:p-7">
+            {children}
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }
 
@@ -202,15 +225,19 @@ function SignIn({
   };
 
   return (
-    <form onSubmit={submit} noValidate>
-      <h1 className="text-lg font-semibold text-ink">Administrator sign-in</h1>
-      <p className="mt-1 text-sm text-ink-muted">
+    <form onSubmit={submit} noValidate className="mx-auto max-w-sm py-2 text-center">
+      <BrandLockup width={190} className="mx-auto h-auto w-[190px]" priority />
+
+      <h1 className="mt-6 text-lg font-semibold tracking-tight text-ink">
+        Administrator sign-in
+      </h1>
+      <p className="mt-1.5 text-sm text-ink-muted">
         This page assigns company computers to employees. It gives no access to anybody&apos;s
         conversations, messages or files.
       </p>
 
       <TextField
-        className="mt-5"
+        className="mt-6 text-left"
         label="Administrator token"
         hint="The ADMIN_TOKEN configured on this server."
         type="password"
@@ -227,9 +254,11 @@ function SignIn({
         </p>
       ) : null}
 
-      <Button type="submit" variant="primary" fullWidth className="mt-5" disabled={pending}>
-        {pending ? 'Signing in…' : 'Sign in'}
-      </Button>
+      <div className="mt-6 text-left">
+        <Button type="submit" variant="primary" fullWidth disabled={pending}>
+          {pending ? 'Signing in…' : 'Sign in'}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -250,10 +279,17 @@ function SetupCode({
   onDismiss: () => void;
 }) {
   return (
-    <div className="mt-6 rounded-md border border-accent/40 bg-accent-tint p-4">
-      <p className="text-sm font-medium text-ink">Setup code for {label}</p>
-      <p className="mt-2 font-mono text-lg tracking-wider break-all text-ink select-all">{code}</p>
-      <p className="mt-2 text-sm text-ink-muted">
+    <div className="mt-6 animate-rise-in overflow-hidden rounded-panel border border-accent/25 bg-accent-tint shadow-card">
+      <div className="brand-rule h-1 w-full" aria-hidden="true" />
+      <div className="p-4 sm:p-5">
+      <p className="text-sm font-semibold text-ink">Setup code for {label}</p>
+      <p
+        className="mt-2.5 rounded-control border border-accent/20 bg-surface px-3 py-2.5 font-mono text-lg tracking-wider text-ink select-all"
+        data-wrap-anywhere
+      >
+        {code}
+      </p>
+      <p className="mt-2.5 text-sm text-ink-muted">
         Open <span className="font-medium text-ink">/setup</span> on that computer and enter this
         code. It works once and then expires. It is stored only as a hash, so this is the only
         time it can be shown — if it is lost, issue a new one.
@@ -261,6 +297,7 @@ function SetupCode({
       <Button size="sm" className="mt-3" onClick={onDismiss}>
         Done
       </Button>
+      </div>
     </div>
   );
 }
@@ -299,7 +336,7 @@ function RegisterForm({
 
   return (
     <form onSubmit={submit} noValidate className="mt-8 border-t border-line pt-6">
-      <h2 className="text-base font-semibold text-ink">Register a computer</h2>
+      <h2 className="text-base font-semibold tracking-tight text-ink">Register a computer</h2>
       <p className="mt-1 text-sm text-ink-muted">
         Creates the employee&apos;s account and a setup code for the machine.
       </p>
@@ -339,11 +376,15 @@ const STATUS_LABELS: Record<AdminDeviceWire['status'], string> = {
   revoked: 'Out of service',
 };
 
+/*
+ * Status is never colour alone: each badge carries its own word, and the ring gives it an edge
+ * that survives a monochrome screen or a colour-blind reader.
+ */
 const STATUS_STYLES: Record<AdminDeviceWire['status'], string> = {
-  'awaiting-setup': 'bg-notice-tint text-notice',
-  enrolled: 'bg-accent-soft text-accent',
-  expired: 'bg-surface-muted text-ink-muted',
-  revoked: 'bg-surface-muted text-ink-subtle',
+  'awaiting-setup': 'bg-notice-tint text-notice ring-notice/25',
+  enrolled: 'bg-gold-soft text-ink ring-brand/25',
+  expired: 'bg-surface-muted text-ink-muted ring-line-strong',
+  revoked: 'bg-surface-muted text-ink-subtle ring-line-strong',
 };
 
 function DeviceTable({
@@ -399,12 +440,12 @@ function DeviceTable({
 
   return (
     <div className="mt-8 border-t border-line pt-6">
-      <h2 className="text-base font-semibold text-ink">Registered computers</h2>
+      <h2 className="text-base font-semibold tracking-tight text-ink">Registered computers</h2>
 
       {/* Its own scroll container, so a wide table never makes the page scroll sideways. */}
       <div className="mt-4 -mx-2 overflow-x-auto px-2">
         <table className="w-full min-w-[40rem] text-left text-sm">
-          <thead className="text-xs tracking-wide text-ink-subtle uppercase">
+          <thead className="border-b border-line text-xs font-semibold tracking-wider text-ink-subtle uppercase">
             <tr>
               <th className="py-2 pr-4 font-medium">Computer</th>
               <th className="py-2 pr-4 font-medium">Assigned to</th>
@@ -495,7 +536,7 @@ function RetireDialog({
         </li>
       </ul>
 
-      <p className="mt-4 rounded-md bg-surface-muted px-3 py-2 text-xs text-ink-subtle">
+      <p className="mt-4 rounded-card border border-line bg-surface-muted px-3 py-2.5 text-xs text-ink-subtle">
         Nothing is deleted. The computer stays in this register, the employee keeps their account,
         and their conversations and messages are untouched. Use{' '}
         <span className="font-medium text-ink">Reassign</span> instead if the computer is simply
@@ -579,7 +620,7 @@ function DeviceRow({
   return (
     <>
       <tr>
-        <td className="py-3 pr-4 align-top font-medium text-ink">{device.label}</td>
+        <td className="py-3.5 pr-4 align-top font-semibold text-ink">{device.label}</td>
         <td className="py-3 pr-4 align-top text-ink-muted">
           {device.assignedUser.displayName}
           <span className="block text-xs text-ink-subtle">
@@ -589,7 +630,7 @@ function DeviceRow({
         <td className="py-3 pr-4 align-top">
           <span
             className={cn(
-              'inline-block rounded-full px-2 py-0.5 text-xs font-medium',
+              'inline-block rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset',
               STATUS_STYLES[device.status],
             )}
           >
@@ -665,7 +706,7 @@ function DeviceRow({
       {renaming ? (
         <tr>
           <td colSpan={5} className="pb-4">
-            <div className="rounded-md border border-line bg-surface-muted p-3">
+            <div className="animate-rise-in rounded-card border border-line bg-surface-muted p-3.5">
               <p className="text-sm text-ink-muted">
                 Changes only what this computer is called here. Its employee, its setup and every
                 message stay exactly as they are.
@@ -700,7 +741,7 @@ function DeviceRow({
       {retired ? (
         <tr>
           <td colSpan={5} className="pb-4">
-            <p className="rounded-md border border-line bg-surface-muted px-3 py-2 text-xs text-ink-muted">
+            <p className="rounded-card border border-line bg-surface-muted px-3 py-2.5 text-xs text-ink-muted">
               Out of service since {formatFullTimestamp(device.revokedAt ?? device.lastSeenAt)}.
               Returning it to service keeps this same computer, its name and{' '}
               <span className="font-medium text-ink">{device.assignedUser.displayName}</span> as
@@ -715,7 +756,7 @@ function DeviceRow({
       {reassigning ? (
         <tr>
           <td colSpan={5} className="pb-4">
-            <div className="rounded-md border border-line bg-surface-muted p-3">
+            <div className="animate-rise-in rounded-card border border-line bg-surface-muted p-3.5">
               <p className="text-sm text-ink-muted">
                 The new employee gets their own account and their own message history.{' '}
                 <span className="font-medium text-ink">

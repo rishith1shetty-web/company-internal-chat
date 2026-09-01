@@ -15,7 +15,8 @@
 import { AdminConsole } from '@/components/admin/AdminConsole';
 
 export const metadata = {
-  title: 'Administration · Company Internal Chat',
+  // The root layout's title template appends the company name.
+  title: 'Administration',
   robots: { index: false, follow: false },
 };
 

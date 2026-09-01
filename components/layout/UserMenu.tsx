@@ -61,9 +61,10 @@ export function UserMenu({ currentUser, deviceLabel, onOpenSettings }: UserMenuP
         aria-expanded={open}
         aria-haspopup="menu"
         className={cn(
-          'flex cursor-pointer items-center gap-2.5 rounded-md py-1.5 pr-2 pl-1 text-left transition-colors duration-150',
-          'hover:bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-          open && 'bg-canvas',
+          'flex cursor-pointer items-center gap-2.5 rounded-control py-1.5 pr-2.5 pl-1.5 text-left',
+          'transition-[background-color,box-shadow] duration-(--duration-quick) ease-(--ease-out-soft)',
+          'hover:bg-canvas-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+          open && 'bg-canvas-deep ring-1 ring-line ring-inset',
         )}
       >
         <Avatar
@@ -86,12 +87,13 @@ export function UserMenu({ currentUser, deviceLabel, onOpenSettings }: UserMenuP
         <div
           role="menu"
           aria-label="Account"
-          className="absolute right-0 z-40 mt-1 w-72 rounded-md border border-line bg-surface py-1 shadow-lg"
+          className="absolute right-0 z-40 mt-1.5 w-72 animate-rise-in rounded-card border border-line bg-surface py-1 shadow-raised"
         >
-          <div className="border-b border-line px-3 py-2">
-            <p className="truncate text-sm font-medium text-ink">{currentUser.displayName}</p>
+          <div className="border-b border-line px-3 py-2.5">
+            <p className="truncate text-sm font-semibold text-ink">{currentUser.displayName}</p>
             <p className="mt-0.5 text-xs text-ink-subtle">
-              ID {userDiscriminator(currentUser.id)} · <span className="break-all">{deviceLabel}</span>
+              ID {userDiscriminator(currentUser.id)} ·{' '}
+              <span data-wrap-anywhere>{deviceLabel}</span>
             </p>
           </div>
 
@@ -120,7 +122,7 @@ function MenuItem({
       type="button"
       role="menuitem"
       onClick={onClick}
-      className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left text-sm text-ink-muted transition-colors duration-150 hover:bg-surface-muted focus-visible:bg-surface-muted focus-visible:outline-none"
+      className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left text-sm text-ink-muted transition-colors duration-(--duration-quick) hover:bg-accent-tint hover:text-ink focus-visible:bg-accent-tint focus-visible:outline-none"
     >
       <span className="mt-0.5 text-ink-subtle">{icon}</span>
       <span>

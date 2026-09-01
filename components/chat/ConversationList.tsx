@@ -1,7 +1,7 @@
 'use client';
 
-import { Avatar, PresenceDot, UnreadBadge } from '@/components/ui/Avatar';
-import { GroupIcon } from '@/components/ui/icons';
+import { Avatar, GroupAvatar, PresenceDot, UnreadBadge } from '@/components/ui/Avatar';
+import { ChatIcon, GroupIcon } from '@/components/ui/icons';
 import { formatListTimestamp } from '@/lib/chat/format';
 import type { ConversationListEntry } from '@/lib/chat/state';
 import { cn } from '@/lib/ui/cn';
@@ -23,16 +23,29 @@ export function ConversationList({
 }: ConversationListProps) {
   if (entries.length === 0) {
     return (
-      <p className="px-4 py-6 text-sm text-ink-subtle">
-        {searchTerm.trim().length > 0
-          ? `No conversations match "${searchTerm.trim()}".`
-          : 'No conversations yet. Use "New chat" or "New group" to start one.'}
-      </p>
+      <div className="px-3 py-8 text-center">
+        <span
+          className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-gold-soft text-brand"
+          aria-hidden="true"
+        >
+          <ChatIcon className="h-5 w-5" />
+        </span>
+        <p className="mt-3 text-sm text-ink-muted">
+          {searchTerm.trim().length > 0
+            ? `No conversations match “${searchTerm.trim()}”.`
+            : 'No conversations yet.'}
+        </p>
+        {searchTerm.trim().length === 0 ? (
+          <p className="mt-1 text-xs text-ink-subtle">
+            Use New chat or New group above to start one.
+          </p>
+        ) : null}
+      </div>
     );
   }
 
   return (
-    <ul className="py-1" aria-label="Conversations">
+    <ul className="space-y-0.5" aria-label="Conversations">
       {entries.map((entry) => (
         <li key={entry.id}>
           <ConversationListItem
@@ -58,18 +71,31 @@ function ConversationListItem({
   const unread = entry.unreadCount > 0;
 
   return (
+    /*
+     * The selected row is marked three ways, none of which is colour alone: a gold rail down its
+     * left edge, a warm tinted fill, and a hairline ring. `aria-current` says the same thing to a
+     * screen reader.
+     */
     <button
       type="button"
       onClick={onSelect}
       aria-current={selected ? 'true' : undefined}
       className={cn(
-        'flex w-full cursor-pointer items-center gap-3 border-l-2 px-3 py-2.5 text-left transition-colors duration-150',
+        'relative flex w-full cursor-pointer items-center gap-3 overflow-hidden rounded-card px-2.5 py-2.5 text-left',
+        'transition-[background-color,box-shadow] duration-(--duration-quick) ease-(--ease-out-soft)',
         'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
         selected
-          ? 'border-accent bg-accent-tint'
-          : 'border-transparent hover:bg-surface-muted',
+          ? 'bg-accent-tint ring-1 ring-accent/15 ring-inset'
+          : 'hover:bg-surface-muted active:bg-canvas-deep',
       )}
     >
+      {selected ? (
+        <span
+          className="absolute inset-y-1.5 left-0 w-1 rounded-r-full bg-gold"
+          aria-hidden="true"
+        />
+      ) : null}
+
       {entry.counterpart ? (
         <Avatar
           userId={entry.counterpart.id}
@@ -77,17 +103,17 @@ function ConversationListItem({
           presence={entry.counterpart.presence}
         />
       ) : (
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-canvas text-ink-muted">
+        <GroupAvatar>
           <GroupIcon className="h-5 w-5" />
-        </span>
+        </GroupAvatar>
       )}
 
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
           <span
             className={cn(
-              'truncate text-sm text-ink',
-              unread ? 'font-semibold' : 'font-medium',
+              'truncate text-sm',
+              unread ? 'font-semibold text-ink' : 'font-medium text-ink',
             )}
           >
             {entry.title}
@@ -98,7 +124,13 @@ function ConversationListItem({
             ) : null}
           </span>
           {entry.timestamp ? (
-            <span className="shrink-0 text-xs text-ink-subtle" suppressHydrationWarning>
+            <span
+              className={cn(
+                'shrink-0 text-[11px] tabular-nums',
+                unread ? 'font-semibold text-brand' : 'text-ink-subtle',
+              )}
+              suppressHydrationWarning
+            >
               {formatListTimestamp(entry.timestamp)}
             </span>
           ) : null}

@@ -53,7 +53,7 @@ export function UserPicker({
         </p>
       ) : (
         <ul
-          className="mt-3 max-h-72 space-y-0.5 overflow-y-auto"
+          className="mt-3 max-h-72 space-y-0.5 overflow-y-auto pr-1"
           role={mode === 'multiple' ? 'group' : 'radiogroup'}
           aria-label="Colleagues"
         >
@@ -69,9 +69,12 @@ export function UserPicker({
                   role={mode === 'multiple' ? 'checkbox' : 'radio'}
                   aria-checked={selected}
                   className={cn(
-                    'flex w-full cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-left transition-colors',
+                    'flex w-full cursor-pointer items-center gap-3 rounded-control px-2 py-2 text-left',
+                    'transition-[background-color,box-shadow] duration-(--duration-quick) ease-(--ease-out-soft)',
                     'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
-                    selected ? 'bg-accent-tint' : 'hover:bg-surface-muted',
+                    selected
+                      ? 'bg-accent-tint ring-1 ring-accent/20 ring-inset'
+                      : 'hover:bg-surface-muted',
                   )}
                 >
                   <Avatar
@@ -98,8 +101,11 @@ export function UserPicker({
                   <span
                     className={cn(
                       'flex h-5 w-5 shrink-0 items-center justify-center border',
-                      mode === 'multiple' ? 'rounded' : 'rounded-full',
-                      selected ? 'border-accent bg-accent text-white' : 'border-line-strong',
+                      'transition-colors duration-(--duration-quick)',
+                      mode === 'multiple' ? 'rounded-[0.3rem]' : 'rounded-full',
+                      selected
+                        ? 'border-accent bg-accent text-white'
+                        : 'border-line-strong bg-surface',
                     )}
                     aria-hidden="true"
                   >
