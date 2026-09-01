@@ -17,6 +17,8 @@
  * (docs/02-database.md §0).
  */
 
+import { isAbsolute, resolve, sep } from 'node:path';
+
 import { DatabaseTargetError, parseDatabaseUrl } from '../db/target';
 
 export type NodeEnvironment = 'development' | 'production' | 'test';
@@ -51,6 +53,23 @@ export interface AppConfig {
    */
   adminToken: string | undefined;
   /**
+   * Absolute path to the file-storage root (Phase 7).
+   *
+   * Always absolute, resolved here from a relative setting, because everything downstream joins
+   * generated names onto it and a relative root would silently follow the process's working
+   * directory. It must not live under `public/` or anywhere Next.js serves statically: nothing
+   * in this application ever maps a URL onto this directory (CLAUDE.md §11).
+   */
+  uploadDir: string;
+  /**
+   * Largest upload accepted, in bytes. 500 MB by default (D-05), configurable.
+   *
+   * Enforced while the bytes are still arriving, not after: the request is aborted the moment
+   * the counter passes this, so an oversized upload never reaches permanent storage and never
+   * has to be buffered to be measured.
+   */
+  maxFileSize: number;
+  /**
    * Redacted description of the configured database (`role@host:port/company_chat_db`), or
    * `undefined` when no database is configured. Safe to log — it contains no password, and the
    * raw connection string is deliberately not exposed on this object (CLAUDE.md §13).
@@ -80,6 +99,20 @@ const DEFAULT_ENROLLMENT_TTL_HOURS = 24;
  * at startup rather than running with it.
  */
 const MIN_ADMIN_TOKEN_LENGTH = 24;
+
+/** D-05: 500 MB. */
+const DEFAULT_MAX_FILE_SIZE = 500 * 1024 * 1024;
+
+/**
+ * A ceiling on the ceiling: 8 GB.
+ *
+ * Not a policy about how large a file should be. It catches a mistyped `MAX_FILE_SIZE` at
+ * startup — a stray zero would otherwise be discovered when a single upload filled the disk.
+ */
+const MAX_CONFIGURABLE_FILE_SIZE = 8 * 1024 * 1024 * 1024;
+
+/** Storage root, relative to the working directory, when none is configured. Git-ignored. */
+const DEFAULT_UPLOAD_DIR = './var/uploads';
 
 export class ConfigError extends Error {
   readonly problems: readonly string[];
@@ -226,6 +259,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     problems,
   );
 
+  const uploadDir = parseUploadDir(readOptional(env, 'UPLOAD_DIR'), problems);
+  const maxFileSize = parseMaxFileSize(readOptional(env, 'MAX_FILE_SIZE'), problems);
+
   const adminToken = readOptional(env, 'ADMIN_TOKEN');
   if (adminToken !== undefined && adminToken.length < MIN_ADMIN_TOKEN_LENGTH) {
     // The value itself is never echoed, here or anywhere else.
@@ -248,6 +284,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     deviceTtlDays,
     enrollmentTtlHours,
     adminToken,
+    uploadDir,
+    maxFileSize,
     databaseTarget,
   };
 }
@@ -256,9 +294,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
  * Deferred configuration — documented in .env.example, added here by the phase that needs it:
  *
  *   Phase 4  (none)                    the realtime layer reuses PORT / APP_URL
- *   Phase 7  UPLOAD_DIR                file storage root, outside the web root
- *            MAX_FILE_SIZE             upload ceiling in bytes, default 500 MB  (D-05)
- *            ALLOWED_FILE_EXTENSIONS   upload allowlist
  *   Phase 8  ALLOWED_NETWORKS          CIDRs permitted to reach the application
  *            TRUSTED_PROXY_IPS         peers whose forwarding headers are believed
+ *
+ * ALLOWED_FILE_EXTENSIONS was listed here for Phase 7 and is deliberately NOT implemented. The
+ * company transfers arbitrary business files — video, archives, source, exports, anything a
+ * colleague needs to send — and an allowlist would block ordinary work while stopping nothing:
+ * an extension is a string the sender chose, so it is not a security control (docs/14-phase-7-
+ * file-transfer.md §7). Uploads are opaque bytes; safety comes from never executing them, never
+ * serving them inline, and authorizing every download.
  */
+
+/**
+ * Resolves the storage root to an absolute path.
+ *
+ * Relative settings are accepted and resolved against the working directory, because that is
+ * what a developer expects from `./var/uploads`. What is stored on the config object is always
+ * absolute: every path built downstream is joined onto this value and then checked to still be
+ * inside it, and that containment check is meaningless against a relative root.
+ */
+function parseUploadDir(raw: string | undefined, problems: string[]): string {
+  const value = raw ?? DEFAULT_UPLOAD_DIR;
+  const absolute = isAbsolute(value) ? value : resolve(process.cwd(), value);
+
+  // A storage root inside the statically served directory would publish every uploaded file.
+  // Refusing at startup is better than discovering it from a URL that should not have worked.
+  const publicDir = resolve(process.cwd(), 'public');
+  if (absolute === publicDir || absolute.startsWith(publicDir + sep)) {
+    problems.push('UPLOAD_DIR must not be inside public/ — uploaded files must never be served statically');
+  }
+
+  return absolute;
+}
+
+function parseMaxFileSize(raw: string | undefined, problems: string[]): number {
+  if (raw === undefined) return DEFAULT_MAX_FILE_SIZE;
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > MAX_CONFIGURABLE_FILE_SIZE) {
+    problems.push(
+      `MAX_FILE_SIZE must be an integer number of bytes between 1 and ${MAX_CONFIGURABLE_FILE_SIZE} ` +
+        `(received "${raw}")`,
+    );
+    return DEFAULT_MAX_FILE_SIZE;
+  }
+
+  return value;
+}

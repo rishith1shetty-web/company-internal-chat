@@ -59,11 +59,52 @@ export interface ConversationMember {
   joinedAt: string;
 }
 
-/** Placeholder shape for Phase 7. No attachment is ever created in Phase 2. */
+/**
+ * A file attached to a message.
+ *
+ * `byteSize` is a string because the column is a `BigInt` and the wire carries it as a decimal
+ * string. The interface only ever formats it for display, so it is never parsed back into a
+ * number that could quietly lose precision.
+ *
+ * There is no path here and no URL: the download link is built from `id`, and the server decides
+ * on every request whether this person may have the bytes.
+ */
 export interface AttachmentSummary {
   id: string;
-  originalFilename: string;
+  filename: string;
+  byteSize: string;
+  mimeType: string;
+  extension: string;
+  createdAt: string;
+}
+
+/**
+ * A file in the Shared files panel.
+ *
+ * The same metadata a message attachment carries, plus who sent it — the panel lists files
+ * outside the run of conversation, so the sender is not otherwise visible.
+ */
+export interface SharedFile extends AttachmentSummary {
+  uploaderId: string | null;
+  messageId: string | null;
+}
+
+/**
+ * A file being uploaded from this browser, and only from this browser.
+ *
+ * Purely local: the server has no concept of an upload in progress, because from its point of
+ * view a file either committed or did not. `progress` is measured from real bytes handed to the
+ * network (`uploadAttachment`), never estimated.
+ */
+export interface PendingUpload {
+  clientMessageId: string;
+  conversationId: string;
+  filename: string;
   byteSize: number;
+  /** 0–1. */
+  progress: number;
+  state: 'UPLOADING' | 'FAILED';
+  error: string | null;
 }
 
 export interface ChatMessage {
@@ -88,6 +129,8 @@ export interface MessagePreview {
   kind: MessageKind;
   body: string | null;
   createdAt: string;
+  /** Set when the newest visible message is a file, so the preview can name it. */
+  attachmentFilename: string | null;
 }
 
 export interface Conversation {

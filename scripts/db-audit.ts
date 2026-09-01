@@ -29,6 +29,9 @@ const TEST_PREFIXES = [
   // Phase 6: the group browser regression and the connection-pool measurement.
   'zz-gui-',
   'zz-pool-',
+  // Phase 7: the file browser regression and the large-file transfer check.
+  'zz-fui-',
+  'zz-big-',
 ];
 
 async function main(): Promise<void> {

@@ -17,10 +17,12 @@
 
 import type {
   ApiErrorWire,
+  ConversationAttachmentsWire,
   ConversationCreatedWire,
   ConversationListWire,
   ConversationMembersWire,
   DirectoryWire,
+  MessageWire,
   MessagePageWire,
   ReadReceiptWire,
   SessionIdentityWire,
@@ -208,5 +210,126 @@ export function markRead(conversationId: string, messageId: string): Promise<Rea
       headers: JSON_HEADERS,
       body: JSON.stringify({ messageId }),
     },
+  );
+}
+
+/* ------------------------------------------------------------------------------------------- */
+/* Files                                                                                         */
+/* ------------------------------------------------------------------------------------------- */
+
+/** Where a file lives once it is uploaded. Built from an id; the server re-authorizes each hit. */
+export function attachmentDownloadUrl(attachmentId: string): string {
+  return `/api/attachments/${encodeURIComponent(attachmentId)}/download`;
+}
+
+export interface UploadHandle {
+  /** Resolves with the stored message once the server has committed it. */
+  done: Promise<MessageWire>;
+  /** Aborts the transfer. The server writes nothing and no message appears. */
+  cancel(): void;
+}
+
+export interface UploadOptions {
+  conversationId: string;
+  file: File;
+  /** The same idempotency key on a retry, so a repeat cannot post the file twice. */
+  clientMessageId: string;
+  /** Optional caption typed alongside the file. */
+  caption?: string | undefined;
+  /** Fraction 0–1 of the bytes the browser has handed to the network. */
+  onProgress?: (fraction: number) => void;
+}
+
+/**
+ * Uploads a file, reporting real progress.
+ *
+ * `XMLHttpRequest` rather than `fetch`, and for exactly one reason: `fetch` cannot report upload
+ * progress. There is no event for it and no supported way to observe the request body being
+ * consumed, so a `fetch` implementation would have to either show nothing or animate a bar that
+ * is not measuring anything. A 500 MB video over a company LAN takes long enough that a made-up
+ * bar would be a lie the user could catch.
+ *
+ * The file is sent as the raw request body, not as multipart form data. The server streams it
+ * straight to disk, so neither side has to hold it in memory (see the route for the whole
+ * reasoning). The two values a form would have carried are percent-encoded headers, because a
+ * header cannot hold arbitrary Unicode and filenames very often are.
+ *
+ * `xhr.send(file)` streams from the browser's file handle — the page never reads the file into
+ * memory either, which is what makes a large upload possible from a modest workstation.
+ */
+export function uploadAttachment(options: UploadOptions): UploadHandle {
+  const request = new XMLHttpRequest();
+
+  const done = new Promise<MessageWire>((resolve, reject) => {
+    request.open(
+      'POST',
+      `/api/conversations/${encodeURIComponent(options.conversationId)}/attachments`,
+      true,
+    );
+    request.withCredentials = true;
+
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    request.setRequestHeader('X-Client-Message-Id', options.clientMessageId);
+    request.setRequestHeader('X-Filename', encodeURIComponent(options.file.name));
+    if (options.caption && options.caption.length > 0) {
+      request.setRequestHeader('X-Caption', encodeURIComponent(options.caption));
+    }
+
+    if (options.onProgress) {
+      const report = options.onProgress;
+      request.upload.addEventListener('progress', (event) => {
+        // `lengthComputable` is false for a stream of unknown size; reporting nothing is better
+        // than reporting a fraction of an unknown total.
+        if (event.lengthComputable && event.total > 0) report(event.loaded / event.total);
+      });
+    }
+
+    request.addEventListener('load', () => {
+      let body: unknown;
+      try {
+        body = JSON.parse(request.responseText) as unknown;
+      } catch {
+        body = undefined;
+      }
+
+      if (request.status >= 200 && request.status < 300) {
+        resolve(body as MessageWire);
+        return;
+      }
+
+      const error = (body as ApiErrorWire | undefined)?.error;
+      reject(
+        new ApiError(
+          request.status,
+          error?.code ?? 'UNKNOWN',
+          error?.message ?? 'The file could not be sent.',
+        ),
+      );
+    });
+
+    request.addEventListener('error', () => {
+      reject(new ApiError(0, 'NETWORK', 'Cannot reach the chat server. The file was not sent.'));
+    });
+
+    // A cancelled upload is not a failure to report to the user: they asked for it.
+    request.addEventListener('abort', () => {
+      reject(new ApiError(0, 'ABORTED', 'The upload was cancelled.'));
+    });
+
+    request.send(options.file);
+  });
+
+  return {
+    done,
+    cancel: () => request.abort(),
+  };
+}
+
+/** The files in a conversation the caller may see. Bounded by `joinedAt` server-side. */
+export function fetchConversationAttachments(
+  conversationId: string,
+): Promise<ConversationAttachmentsWire> {
+  return request<ConversationAttachmentsWire>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/attachments`,
   );
 }

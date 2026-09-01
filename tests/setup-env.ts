@@ -10,6 +10,10 @@
  * machine with no database.
  */
 
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 try {
   process.loadEnvFile('.env');
 } catch {
@@ -25,3 +29,27 @@ try {
  * one — never overriding a real `.env` value, and never written to disk.
  */
 process.env['ADMIN_TOKEN'] ??= 'zz-test-admin-token-0123456789abcdef';
+
+/*
+ * A storage root of the test run's own, under the system temp directory.
+ *
+ * Set BEFORE any module reads configuration, because `lib/config/env.ts` is evaluated once at
+ * import and `UPLOAD_DIR` is resolved to an absolute path there. Without this the file tests
+ * would write into — and delete out of — whatever storage the developer's own server is using,
+ * which is exactly the kind of thing a test must never do.
+ *
+ * Overridden unconditionally rather than with `??=`: a real `UPLOAD_DIR` in `.env` is the
+ * running application's storage, and it is the value most important NOT to point tests at.
+ */
+process.env['UPLOAD_DIR'] = mkdtempSync(join(tmpdir(), 'zz-test-uploads-'));
+
+/*
+ * A small upload limit for the test run: 1 MB.
+ *
+ * The production ceiling is 500 MB (D-05), and a test that proved the route refuses an oversized
+ * file by sending 500 MB through it would be slow enough that nobody would run it. The limit is
+ * configuration, so the tests configure it — which exercises the same code path with the same
+ * enforcement, at a size a test suite can afford. The boundary behaviour is what is being
+ * checked, not the number.
+ */
+process.env['MAX_FILE_SIZE'] = String(1024 * 1024);

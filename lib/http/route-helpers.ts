@@ -27,6 +27,7 @@ import {
 import { loadConfig } from '@/lib/config/env';
 import { getDb } from '@/lib/db/prisma';
 import type { EnrollmentConfig } from '@/lib/devices/service';
+import type { StorageConfig } from '@/lib/files/storage';
 import { createLogger, describeError, type Logger } from '@/lib/logging/logger';
 
 const config = loadConfig();
@@ -50,6 +51,17 @@ export const enrollmentConfig: EnrollmentConfig = {
 
 /** Whether an administrator token is configured at all. Absent means the admin surface is shut. */
 export const adminConfigured = config.adminToken !== undefined;
+
+/**
+ * Where uploaded files live and how large one may be (Phase 7).
+ *
+ * Read once here, like every other setting, so no route reaches into `process.env` and no two
+ * routes can end up disagreeing about the limit they enforce.
+ */
+export const storageConfig: StorageConfig = {
+  uploadDir: config.uploadDir,
+  maxFileSize: config.maxFileSize,
+};
 
 /**
  * Cookie attributes for both identity cookies.

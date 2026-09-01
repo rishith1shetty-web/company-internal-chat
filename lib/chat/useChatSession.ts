@@ -28,7 +28,9 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   ApiError,
   addGroupMembers as requestAddMembers,
+  uploadAttachment,
   createGroupConversation as requestGroup,
+  fetchConversationAttachments,
   fetchConversations,
   fetchDirectory,
   fetchMessages,
@@ -61,6 +63,12 @@ export interface ChatSession {
   /** Re-reads the colleague list, so a picker never opens on a stale directory. */
   refreshDirectory(): void;
   sendMessage(body: string): void;
+  /** Uploads a file into the open conversation. Returns once the server has committed it. */
+  sendFile(file: File, caption?: string): void;
+  /** Abandons an upload still in flight. Nothing is written and no message appears. */
+  cancelUpload(clientMessageId: string): void;
+  /** Clears a failed upload card the user has read. */
+  dismissUpload(clientMessageId: string): void;
   retryMessage(message: ChatMessage): void;
   loadOlderMessages(): void;
   searchDirectory(term: string): void;
@@ -84,6 +92,14 @@ export function useChatSession(): ChatSession {
   const newestMessageRef = useRef<string | null>(null);
   const oldestMessageRef = useRef<string | null>(null);
   const knownConversationsRef = useRef<Set<string>>(new Set());
+  /*
+   * Cancel handles for uploads in flight, by idempotency key.
+   *
+   * A ref rather than state: an `XMLHttpRequest` is not renderable data, and putting it in state
+   * would make every progress event replace an object the reducer has no use for. What the
+   * interface renders is the `PendingUpload` beside it, which is state.
+   */
+  const uploadsRef = useRef<Map<string, () => void>>(new Map());
 
   const currentUserId = state.currentUser?.id ?? null;
 
@@ -221,6 +237,24 @@ export function useChatSession(): ChatSession {
     [handleFailure, markConversationRead],
   );
 
+  /**
+   * Reads the files a conversation has, for the Shared files panel.
+   *
+   * Re-read rather than maintained locally: the server decides which files this person may see
+   * (their `joinedAt` bounds it), and inserting one locally would be this browser deciding
+   * instead. A failure is silent — the panel is a convenience beside a conversation that works,
+   * and interrupting somebody for it would be worse than the panel being briefly out of date.
+   */
+  const loadAttachments = useCallback(async (conversationId: string) => {
+    dispatch({ type: 'attachments-loading', conversationId });
+    try {
+      const data = await fetchConversationAttachments(conversationId);
+      dispatch({ type: 'attachments-loaded', conversationId, files: data.attachments });
+    } catch {
+      dispatch({ type: 'attachments-loaded', conversationId, files: [] });
+    }
+  }, []);
+
   const syncPresence = useCallback(async () => {
     const response = await socketRef.current?.syncPresence();
     if (response?.ok) dispatch({ type: 'presence-changed', entries: response.data });
@@ -244,6 +278,7 @@ export function useChatSession(): ChatSession {
             userId: identity.userId,
             displayName: identity.displayName,
             deviceLabel: identity.deviceLabel,
+            maxFileSize: identity.maxFileSize,
           });
         } else {
           dispatch({ type: 'identity-missing' });
@@ -329,6 +364,9 @@ export function useChatSession(): ChatSession {
 
         if (openConversationRef.current === wire.conversationId) {
           void markConversationRead(wire.conversationId, wire.id);
+          // A file arriving is a change to the Shared files list, which is otherwise only read
+          // when the conversation opens.
+          if (wire.attachment) void loadAttachments(wire.conversationId);
         }
       },
 
@@ -367,7 +405,15 @@ export function useChatSession(): ChatSession {
       socketRef.current = null;
       socket.close();
     };
-  }, [currentUserId, backfill, loadConversations, loadHistory, markConversationRead, syncPresence]);
+  }, [
+    currentUserId,
+    backfill,
+    loadAttachments,
+    loadConversations,
+    loadHistory,
+    markConversationRead,
+    syncPresence,
+  ]);
 
   /* ----------------------------------------------------------------------------------------- */
   /* Refs the socket handlers read                                                               */
@@ -400,8 +446,9 @@ export function useChatSession(): ChatSession {
       // Always re-read: the badge was cleared optimistically and the history on screen may be a
       // reconnection old. The merge in the reducer keeps anything still sending.
       void loadHistory(conversationId);
+      void loadAttachments(conversationId);
     },
-    [loadHistory],
+    [loadAttachments, loadHistory],
   );
 
   const startDirectConversation = useCallback(
@@ -569,6 +616,100 @@ export function useChatSession(): ChatSession {
     [deliver],
   );
 
+  /**
+   * Sends a file.
+   *
+   * The card is shown as uploading immediately and becomes a real message only when the server
+   * answers — never before. That ordering is the point: an upload that is still going up the wire
+   * is not something a colleague can open, and claiming otherwise would be the one lie this
+   * interface must not tell.
+   *
+   * The bytes go over HTTP. `clientMessageId` is minted here and reused on any retry, so a repeat
+   * of a request whose response was lost collides with the stored row instead of posting the file
+   * a second time — the same guard text messages use.
+   */
+  const sendFile = useCallback(
+    (file: File, caption?: string) => {
+      const conversationId = openConversationRef.current;
+      if (!conversationId) return;
+
+      const clientMessageId = crypto.randomUUID();
+
+      dispatch({
+        type: 'upload-started',
+        clientMessageId,
+        conversationId,
+        filename: file.name,
+        byteSize: file.size,
+      });
+
+      const upload = uploadAttachment({
+        conversationId,
+        file,
+        clientMessageId,
+        caption,
+        onProgress: (progress) => {
+          dispatch({ type: 'upload-progress', clientMessageId, progress });
+        },
+      });
+
+      uploadsRef.current.set(clientMessageId, upload.cancel);
+
+      void upload.done
+        .then((message) => {
+          uploadsRef.current.delete(clientMessageId);
+          // The committed message replaces the card. The socket broadcast may also arrive; the
+          // reducer discards whichever copy is second by `clientMessageId`.
+          dispatch({ type: 'message-received', message });
+          dispatch({ type: 'upload-finished', clientMessageId });
+          dispatch({ type: 'notice', message: null });
+          void loadAttachments(conversationId);
+        })
+        .catch((error: unknown) => {
+          uploadsRef.current.delete(clientMessageId);
+
+          // Cancelling is a decision, not a failure: the card simply goes.
+          if (error instanceof ApiError && error.code === 'ABORTED') {
+            dispatch({ type: 'upload-finished', clientMessageId });
+            return;
+          }
+
+          if (error instanceof ApiError && error.isUnauthenticated) {
+            dispatch({ type: 'upload-finished', clientMessageId });
+            handleFailure(error, '');
+            return;
+          }
+
+          dispatch({
+            type: 'upload-failed',
+            clientMessageId,
+            message:
+              error instanceof ApiError ? error.message : 'The file could not be sent.',
+          });
+        });
+    },
+    [handleFailure, loadAttachments],
+  );
+
+  const cancelUpload = useCallback((clientMessageId: string) => {
+    uploadsRef.current.get(clientMessageId)?.();
+    uploadsRef.current.delete(clientMessageId);
+    dispatch({ type: 'upload-finished', clientMessageId });
+  }, []);
+
+  const dismissUpload = useCallback((clientMessageId: string) => {
+    dispatch({ type: 'upload-finished', clientMessageId });
+  }, []);
+
+  /** Anything still in flight when the workspace goes away is abandoned rather than left running. */
+  useEffect(() => {
+    const inFlight = uploadsRef.current;
+    return () => {
+      for (const cancel of inFlight.values()) cancel();
+      inFlight.clear();
+    };
+  }, []);
+
   const retryMessage = useCallback(
     (message: ChatMessage) => {
       if (message.deliveryState !== 'FAILED' || message.body === null) return;
@@ -652,6 +793,9 @@ export function useChatSession(): ChatSession {
     removeMember,
     refreshDirectory,
     sendMessage,
+    sendFile,
+    cancelUpload,
+    dismissUpload,
     retryMessage,
     loadOlderMessages,
     searchDirectory,

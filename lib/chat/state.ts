@@ -22,6 +22,8 @@ import type {
   ChatMessage,
   Conversation,
   DeliveryState,
+  PendingUpload,
+  SharedFile,
   UserSummary,
 } from '@/lib/chat/types';
 import type {
@@ -70,7 +72,13 @@ export interface ChatState {
    *
    * Nothing in the interface can change any of the three.
    */
-  currentUser: { id: string; displayName: string; deviceLabel: string } | null;
+  currentUser: {
+    id: string;
+    displayName: string;
+    deviceLabel: string;
+    /** The server's upload ceiling in bytes. Not decided here, only carried. */
+    maxFileSize: number;
+  } | null;
   /** Every user the interface can name, keyed by id — never by name. */
   users: Record<string, DirectoryUser>;
   /** Live presence, from the socket. Absent means "not known to be online". */
@@ -81,13 +89,35 @@ export interface ChatState {
   selectedConversationId: string | null;
   searchTerm: string;
   connection: ConnectionState;
+  /**
+   * Files this browser is currently uploading, keyed by their idempotency key.
+   *
+   * Local only, and deliberately not modelled as optimistic messages: an upload that has not
+   * committed is not a message, and showing it as one would claim a colleague can see a file that
+   * is still going up the wire. It becomes a real message when the server says so.
+   */
+  uploads: Record<string, PendingUpload>;
+  /**
+   * The Shared files list per conversation, as the server last answered it.
+   *
+   * Kept separately from messages rather than derived from them: the panel shows every file in
+   * the caller's window, and the message list holds only the pages that have been read. Deriving
+   * it from what happens to be loaded would make the panel change as somebody scrolled.
+   */
+  attachments: Record<string, { loading: boolean; files: SharedFile[] }>;
   /** A failure the user should be told about, cleared when it stops being true. */
   notice: string | null;
 }
 
 export type ChatAction =
   | { type: 'identity-missing' }
-  | { type: 'identity-ready'; userId: string; displayName: string; deviceLabel: string }
+  | {
+      type: 'identity-ready';
+      userId: string;
+      displayName: string;
+      deviceLabel: string;
+      maxFileSize: number;
+    }
   | { type: 'directory-loaded'; users: UserWire[] }
   | { type: 'conversations-loaded'; conversations: ConversationWire[]; users: UserWire[] }
   | { type: 'conversation-opened'; conversation: ConversationWire; users: UserWire[] }
@@ -117,6 +147,18 @@ export type ChatAction =
   | { type: 'presence-changed'; entries: PresenceWire[] }
   | { type: 'connection-changed'; connection: ConnectionState }
   | { type: 'unread-cleared'; conversationId: string; unreadCount: number }
+  | {
+      type: 'upload-started';
+      clientMessageId: string;
+      conversationId: string;
+      filename: string;
+      byteSize: number;
+    }
+  | { type: 'upload-progress'; clientMessageId: string; progress: number }
+  | { type: 'upload-failed'; clientMessageId: string; message: string }
+  | { type: 'upload-finished'; clientMessageId: string }
+  | { type: 'attachments-loading'; conversationId: string }
+  | { type: 'attachments-loaded'; conversationId: string; files: SharedFile[] }
   | { type: 'notice'; message: string | null };
 
 export const initialChatState: ChatState = {
@@ -130,6 +172,8 @@ export const initialChatState: ChatState = {
   selectedConversationId: null,
   searchTerm: '',
   connection: 'connecting',
+  uploads: {},
+  attachments: {},
   notice: null,
 };
 
@@ -154,6 +198,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           id: action.userId,
           displayName: action.displayName,
           deviceLabel: action.deviceLabel,
+          maxFileSize: action.maxFileSize,
         },
         notice: null,
       };
@@ -235,6 +280,81 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ),
       };
 
+    case 'upload-started':
+      return {
+        ...state,
+        uploads: {
+          ...state.uploads,
+          [action.clientMessageId]: {
+            clientMessageId: action.clientMessageId,
+            conversationId: action.conversationId,
+            filename: action.filename,
+            byteSize: action.byteSize,
+            progress: 0,
+            state: 'UPLOADING',
+            error: null,
+          },
+        },
+      };
+
+    case 'upload-progress': {
+      const existing = state.uploads[action.clientMessageId];
+      if (!existing) return state;
+      return {
+        ...state,
+        uploads: {
+          ...state.uploads,
+          [action.clientMessageId]: { ...existing, progress: action.progress },
+        },
+      };
+    }
+
+    case 'upload-failed': {
+      const existing = state.uploads[action.clientMessageId];
+      if (!existing) return state;
+      return {
+        ...state,
+        uploads: {
+          ...state.uploads,
+          [action.clientMessageId]: {
+            ...existing,
+            state: 'FAILED',
+            error: action.message,
+          },
+        },
+      };
+    }
+
+    case 'upload-finished': {
+      // Removed rather than marked done: the committed message is what represents it now, and
+      // leaving a finished card beside its own message would show the file twice.
+      if (!(action.clientMessageId in state.uploads)) return state;
+      const uploads = { ...state.uploads };
+      delete uploads[action.clientMessageId];
+      return { ...state, uploads };
+    }
+
+    case 'attachments-loading':
+      return {
+        ...state,
+        attachments: {
+          ...state.attachments,
+          [action.conversationId]: {
+            loading: true,
+            files: state.attachments[action.conversationId]?.files ?? [],
+          },
+        },
+      };
+
+    case 'attachments-loaded':
+      return {
+        ...state,
+        attachments: {
+          ...state.attachments,
+          [action.conversationId]: { loading: false, files: action.files },
+        },
+      };
+
     case 'notice':
       return { ...state, notice: action.message };
 
@@ -257,8 +377,7 @@ export function toChatMessage(wire: MessageWire, deliveryState: DeliveryState = 
     body: wire.body,
     createdAt: wire.createdAt,
     deliveryState,
-    // Phase 7 fills this in; the server does not send attachments yet.
-    attachment: null,
+    attachment: wire.attachment,
   };
 }
 
@@ -281,6 +400,7 @@ export function toConversation(wire: ConversationWire): Conversation {
           kind: wire.lastMessage.type,
           body: wire.lastMessage.body,
           createdAt: wire.lastMessage.createdAt,
+          attachmentFilename: wire.lastMessage.attachmentFilename,
         }
       : null,
     unreadCount: wire.unreadCount,
@@ -533,6 +653,7 @@ function refreshConversationTail(
               kind: newest.kind,
               body: newest.body,
               createdAt: newest.createdAt,
+              attachmentFilename: newest.attachment?.filename ?? null,
             },
             unreadCount: options.bumpUnread
               ? conversation.unreadCount + 1
@@ -712,7 +833,6 @@ export function conversationPreview(state: ChatState, conversation: Conversation
   if (!last) return 'No messages yet';
 
   if (last.kind === 'SYSTEM') return last.body ?? '';
-  if (last.kind === 'FILE') return 'Sent a file';
 
   const usersById = selectUsersById(state);
   const isMine = last.senderId === state.currentUser?.id;
@@ -721,6 +841,15 @@ export function conversationPreview(state: ChatState, conversation: Conversation
     : (usersById.get(last.senderId ?? '')?.displayName ?? 'Unknown user');
 
   const prefix = conversation.type === 'GROUP' || isMine ? `${senderName}: ` : '';
+
+  // A file preview names the file. "Sent a file" tells somebody scanning the sidebar nothing
+  // they could act on, and the name is already inside their visible window (D-03) or the
+  // preview would not have been computed for them at all.
+  if (last.kind === 'FILE') {
+    const name = attachmentNameOf(last);
+    return `${prefix}${name ? `📎 ${name}` : 'Sent a file'}`;
+  }
+
   return `${prefix}${last.body ?? ''}`;
 }
 
@@ -790,4 +919,28 @@ export function selectConversationListEntries(state: ChatState): ConversationLis
           : null,
     };
   });
+}
+
+/** The filename on whichever preview shape the caller has — a loaded message or the server's. */
+function attachmentNameOf(
+  last: ChatMessage | { attachmentFilename?: string | null },
+): string | null {
+  if ('attachment' in last && last.attachment) return last.attachment.filename;
+  if ('attachmentFilename' in last) return last.attachmentFilename ?? null;
+  return null;
+}
+
+/** Files this browser is currently uploading into one conversation. */
+export function selectUploads(state: ChatState, conversationId: string): PendingUpload[] {
+  return Object.values(state.uploads).filter(
+    (upload) => upload.conversationId === conversationId,
+  );
+}
+
+/** The Shared files list for a conversation, and whether it is being read. */
+export function selectSharedFiles(
+  state: ChatState,
+  conversationId: string,
+): { loading: boolean; files: SharedFile[] } {
+  return state.attachments[conversationId] ?? { loading: false, files: [] };
 }

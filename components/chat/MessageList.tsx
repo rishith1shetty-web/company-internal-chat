@@ -2,10 +2,11 @@
 
 import { useEffect, useRef } from 'react';
 
+import { AttachmentCard, UploadCard } from '@/components/chat/AttachmentCard';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { formatDayLabel, formatFullTimestamp, formatTime } from '@/lib/chat/format';
-import type { ChatMessage, UserSummary } from '@/lib/chat/types';
+import type { ChatMessage, PendingUpload, UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
 
 interface MessageListProps {
@@ -25,6 +26,10 @@ interface MessageListProps {
   onLoadOlder: () => void;
   /** Re-sends a message whose delivery failed, reusing its idempotency key. */
   onRetry: (message: ChatMessage) => void;
+  /** Files this browser is uploading into this conversation. Local state, never a message. */
+  uploads: PendingUpload[];
+  onCancelUpload: (clientMessageId: string) => void;
+  onDismissUpload: (clientMessageId: string) => void;
 }
 
 /** Messages sent within this window by the same person are visually grouped. */
@@ -41,6 +46,9 @@ export function MessageList({
   hasOlderMessages,
   onLoadOlder,
   onRetry,
+  uploads,
+  onCancelUpload,
+  onDismissUpload,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -50,7 +58,9 @@ export function MessageList({
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [conversationId, messages.length]);
 
-  if (messages.length === 0) {
+  // An upload in flight is something to show, so an otherwise empty conversation must not fall
+  // into the empty state and hide it.
+  if (messages.length === 0 && uploads.length === 0) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
         <p className="max-w-sm text-center text-sm text-ink-subtle" role="status">
@@ -93,6 +103,25 @@ export function MessageList({
           </li>
         ))}
       </ol>
+
+      {/*
+        Uploads sit after the messages rather than among them, because they are not messages yet:
+        nobody else can see these files, and placing them in the timeline would suggest otherwise.
+        Same column width as the messages, so a card lines up with the bubbles above it.
+      */}
+      {uploads.length > 0 ? (
+        <div className="mx-auto w-full max-w-3xl">
+          {uploads.map((upload) => (
+            <UploadCard
+              key={upload.clientMessageId}
+              upload={upload}
+              onCancel={() => onCancelUpload(upload.clientMessageId)}
+              onDismiss={() => onDismissUpload(upload.clientMessageId)}
+            />
+          ))}
+        </div>
+      ) : null}
+
       <div ref={bottomRef} />
     </div>
   );
@@ -217,7 +246,17 @@ function MessageBubble({
             failed && 'ring-2 ring-danger/60',
           )}
         >
-          {message.body}
+          {/*
+            A file and a caption, in that order. The schema allows a `FILE` message to carry a
+            body, so somebody can send a spreadsheet and say what it is in one message; when there
+            is no caption the bubble is just the file.
+          */}
+          {message.attachment ? (
+            <AttachmentCard attachment={message.attachment} isOwn={isOwn} />
+          ) : null}
+          {message.body ? (
+            <span className={cn('block', message.attachment && 'mt-2')}>{message.body}</span>
+          ) : null}
         </div>
 
         <p className={cn('mt-1 text-[11px] text-ink-subtle', isOwn && 'text-right')}>

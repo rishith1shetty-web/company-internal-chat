@@ -69,12 +69,11 @@ export function Sidebar({
       </nav>
 
       {/*
-        Honest about what the application can currently do. One-to-one and group conversations are
-        real and persistent; file transfer (Phase 7) is not built yet, and saying so is better than
-        a control that silently does nothing.
+        What the application can do, stated plainly. Every one of these is real and persistent:
+        there is no longer a control here that says it is waiting for a later phase.
       */}
       <p className="shrink-0 border-t border-line px-3 py-2 text-xs text-ink-subtle">
-        One-to-one and group chat · file transfer coming later
+        One-to-one and group chat · file transfer
       </p>
     </div>
   );

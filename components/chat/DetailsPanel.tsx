@@ -3,13 +3,15 @@
 import { Avatar } from '@/components/ui/Avatar';
 import { Button, IconButton } from '@/components/ui/Button';
 import { CloseIcon, FileIcon } from '@/components/ui/icons';
+import { attachmentDownloadUrl } from '@/lib/chat/api';
 import {
+  formatFileSize,
   formatFullTimestamp,
   formatPresence,
   hasNameCollision,
   userDiscriminator,
 } from '@/lib/chat/format';
-import type { Conversation, UserSummary } from '@/lib/chat/types';
+import type { Conversation, SharedFile, UserSummary } from '@/lib/chat/types';
 
 interface DetailsPanelProps {
   conversation: Conversation;
@@ -21,6 +23,9 @@ interface DetailsPanelProps {
   onAddMembers: () => void;
   /** Groups only: ask to remove somebody. Confirmed before anything is sent. */
   onRequestRemove: (userId: string) => void;
+  /** Files in this conversation the current user may see. Bounded by `joinedAt` server-side. */
+  sharedFiles: SharedFile[];
+  filesLoading: boolean;
 }
 
 /**
@@ -43,6 +48,8 @@ export function DetailsPanel({
   onClose,
   onAddMembers,
   onRequestRemove,
+  sharedFiles,
+  filesLoading,
 }: DetailsPanelProps) {
   const allUsers = [...usersById.values()];
   const isGroup = conversation.type === 'GROUP';
@@ -153,14 +160,64 @@ export function DetailsPanel({
         <section className="mt-6">
           <h3 className="text-xs font-semibold tracking-wide text-ink-subtle uppercase">
             Shared files
+            {sharedFiles.length > 0 ? (
+              <span className="ml-1.5 font-normal normal-case">({sharedFiles.length})</span>
+            ) : null}
           </h3>
-          <div className="mt-2 rounded-md border border-dashed border-line-strong px-3 py-4 text-center">
-            <FileIcon className="mx-auto h-5 w-5 text-ink-subtle" />
-            <p className="mt-1.5 text-xs text-ink-subtle">
-              Files shared in this conversation will be listed here once file transfer is
-              implemented.
+
+          {filesLoading && sharedFiles.length === 0 ? (
+            <p className="mt-2 text-xs text-ink-subtle" role="status">
+              Loading files…
             </p>
-          </div>
+          ) : sharedFiles.length === 0 ? (
+            <div className="mt-2 rounded-md border border-dashed border-line-strong px-3 py-4 text-center">
+              <FileIcon className="mx-auto h-5 w-5 text-ink-subtle" />
+              <p className="mt-1.5 text-xs text-ink-subtle">
+                No files have been shared here yet. Use the paperclip in the message box to send
+                one.
+              </p>
+            </div>
+          ) : (
+            <ul className="mt-2 space-y-1">
+              {sharedFiles.map((file) => (
+                <li key={file.id}>
+                  <a
+                    href={attachmentDownloadUrl(file.id)}
+                    download={file.filename}
+                    className="flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-surface-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                  >
+                    <span
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-canvas text-ink-muted"
+                      aria-hidden="true"
+                    >
+                      <FileIcon className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className="block truncate text-sm text-ink"
+                        title={file.filename}
+                      >
+                        {file.filename}
+                      </span>
+                      <span className="block text-xs text-ink-subtle" suppressHydrationWarning>
+                        {formatFileSize(file.byteSize)}
+                        {file.uploaderId
+                          ? ` · ${usersById.get(file.uploaderId)?.displayName ?? 'Unknown user'}`
+                          : ''}
+                        {` · ${formatFullTimestamp(file.createdAt)}`}
+                      </span>
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {isGroup ? (
+            <p className="mt-3 text-xs text-ink-subtle">
+              This list shows the files shared since you joined the group.
+            </p>
+          ) : null}
         </section>
       </div>
     </div>

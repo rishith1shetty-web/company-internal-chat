@@ -28,6 +28,7 @@ import {
   cookieOptions,
   identityConfig,
   routeLogger as logger,
+  storageConfig,
 } from '@/lib/http/route-helpers';
 import { describeError } from '@/lib/logging/logger';
 
@@ -57,6 +58,9 @@ export async function GET(request: Request): Promise<NextResponse> {
       displayName: resolved.current.displayName,
       // Shown read-only in the profile area, so an employee can tell IT which machine they are at.
       deviceLabel: resolved.current.deviceLabel,
+      // So the composer can refuse an oversized file before sending it. The server enforces the
+      // same limit while the bytes arrive, whatever the browser was told.
+      maxFileSize: storageConfig.maxFileSize,
     } satisfies SessionIdentityWire);
 
     // The device cookie re-established the session; hand the browser its new session cookie.

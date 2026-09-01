@@ -67,6 +67,8 @@ export interface MessagePreview {
   type: 'TEXT' | 'FILE' | 'SYSTEM';
   body: string | null;
   createdAt: Date;
+  /** The filename when the newest visible message is a file, so the sidebar can name it. */
+  attachmentFilename: string | null;
 }
 
 export interface ConversationSummary {
@@ -87,6 +89,9 @@ const previewSelection = {
   type: true,
   body: true,
   createdAt: true,
+  // Only the name. The preview is a line of text in a list, and nothing else about the file
+  // belongs in a response that is sent for every conversation on every load.
+  attachment: { select: { originalFilename: true } },
 } as const;
 
 /**
@@ -278,7 +283,12 @@ async function loadPreviews(
 
   const previews = new Map<string, MessagePreview>();
   for (const [conversationId, message] of entries) {
-    if (message) previews.set(conversationId, message);
+    if (!message) continue;
+    const { attachment, ...preview } = message;
+    previews.set(conversationId, {
+      ...preview,
+      attachmentFilename: attachment?.originalFilename ?? null,
+    });
   }
   return previews;
 }

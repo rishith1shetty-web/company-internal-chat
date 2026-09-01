@@ -525,6 +525,35 @@ export function createRealtimeGateway(
         io.in(rooms.user(userId)).socketsLeave(room);
       }
     },
+
+    /**
+     * A file uploaded over HTTP, delivered to the conversation exactly as a socket send would be.
+     *
+     * The room is repaired first for the same reason the send path repairs it: a conversation
+     * created after a member connected has no room membership for them, and the broadcast would
+     * reach nobody. Membership comes from the database, so this adds people who are entitled to
+     * the room and never people who asked for it.
+     *
+     * The sender's own other tabs are included — their uploading tab already has the message from
+     * the HTTP response, and the reducer discards the duplicate by `clientMessageId`.
+     */
+    messagePosted(posted): void {
+      void (async () => {
+        try {
+          await ensureMembersInRoom(posted.conversationId, posted.senderId);
+          io.to(rooms.conversation(posted.conversationId)).emit(
+            'message:new',
+            posted.message as never,
+          );
+        } catch (error) {
+          // The message is committed. A delivery that fails here costs a refresh, not a message.
+          logger.warn('Could not deliver an uploaded file over the socket', {
+            conversationId: posted.conversationId,
+            ...describeError(error),
+          });
+        }
+      })();
+    },
   };
 
   setRealtimeNotifier(notifier);

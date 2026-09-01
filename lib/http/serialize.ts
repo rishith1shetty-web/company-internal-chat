@@ -13,6 +13,7 @@ import type { ConversationMembersWire, ConversationWire, UserWire } from '@/lib/
 import { listUsersByIds } from '@/lib/users/directory';
 import type { StoredMessage } from '@/lib/messages/service';
 import type { MessageWire } from '@/lib/chat/wire';
+import { toMessageWire } from '@/lib/realtime/events';
 
 export function toUserWire(user: DirectoryEntry): UserWire {
   return {
@@ -41,6 +42,7 @@ export function toConversationWire(conversation: ConversationSummary): Conversat
           type: conversation.lastMessage.type,
           body: conversation.lastMessage.body,
           createdAt: conversation.lastMessage.createdAt.toISOString(),
+          attachmentFilename: conversation.lastMessage.attachmentFilename,
         }
       : null,
     unreadCount: conversation.unreadCount,
@@ -48,15 +50,7 @@ export function toConversationWire(conversation: ConversationSummary): Conversat
 }
 
 export function toMessageWireFromRow(message: StoredMessage): MessageWire {
-  return {
-    id: message.id,
-    conversationId: message.conversationId,
-    senderId: message.senderId,
-    clientMessageId: message.clientMessageId,
-    type: message.type,
-    body: message.body,
-    createdAt: message.createdAt.toISOString(),
-  };
+  return toMessageWire(message);
 }
 
 /** Every distinct member id across a set of conversations, so their names can be resolved once. */

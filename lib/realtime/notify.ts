@@ -34,8 +34,25 @@ export interface ConversationAudienceChange {
   removedIds?: readonly string[];
 }
 
+/**
+ * A message committed over HTTP rather than over the socket — a file upload (Phase 7).
+ *
+ * Carries the message METADATA, which for a file means its name, size and type. It never carries
+ * the file. Bytes travel over HTTP, in both directions, and are fetched by whoever chooses to
+ * download them through an endpoint that authorizes them again; pushing them down a socket would
+ * send a 500 MB video to every member whether they wanted it or not.
+ */
+export interface PostedMessage {
+  conversationId: string;
+  /** Server-derived. Their own other tabs are told; their sending tab already has the answer. */
+  senderId: string;
+  /** Exactly what `message:new` carries when the socket path sends one. */
+  message: unknown;
+}
+
 export interface RealtimeNotifier {
   conversationChanged(change: ConversationAudienceChange): void;
+  messagePosted(posted: PostedMessage): void;
 }
 
 const globalForRealtime = globalThis as unknown as {
@@ -68,4 +85,15 @@ export function clearRealtimeNotifier(notifier: RealtimeNotifier): void {
  */
 export function notifyConversationChanged(change: ConversationAudienceChange): void {
   globalForRealtime.__companyChatNotifier?.conversationChanged(change);
+}
+
+/**
+ * Delivers a message that was committed over HTTP to the conversation's members.
+ *
+ * Same guarantee as `notifyConversationChanged`: called only after the transaction commits, and a
+ * no-op when no gateway is attached. A browser that misses it sees the file on its next read, and
+ * every reconnection performs one.
+ */
+export function notifyMessagePosted(posted: PostedMessage): void {
+  globalForRealtime.__companyChatNotifier?.messagePosted(posted);
 }

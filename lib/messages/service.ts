@@ -45,6 +45,24 @@ export interface SendMessageInput {
   clientMessageId: string;
 }
 
+/**
+ * The file on a `FILE` message (Phase 7).
+ *
+ * Selected alongside every message rather than fetched separately: a page of fifty messages would
+ * otherwise be fifty extra queries, and the join is on `Attachment.messageId`, which is unique.
+ *
+ * `storageKey` is deliberately absent. It is never selected into anything that travels upward, so
+ * there is no route by which a physical path could reach a browser even by accident.
+ */
+export interface StoredAttachment {
+  id: string;
+  originalFilename: string;
+  byteSize: bigint;
+  mimeType: string;
+  extension: string;
+  createdAt: Date;
+}
+
 export interface StoredMessage {
   id: string;
   conversationId: string;
@@ -53,6 +71,8 @@ export interface StoredMessage {
   type: 'TEXT' | 'FILE' | 'SYSTEM';
   body: string | null;
   createdAt: Date;
+  /** Present on `FILE` messages, null on the rest. */
+  attachment: StoredAttachment | null;
 }
 
 export interface SendMessageResult {
@@ -150,6 +170,16 @@ const messageSelection = {
   type: true,
   body: true,
   createdAt: true,
+  attachment: {
+    select: {
+      id: true,
+      originalFilename: true,
+      byteSize: true,
+      mimeType: true,
+      extension: true,
+      createdAt: true,
+    },
+  },
 } as const;
 
 /**

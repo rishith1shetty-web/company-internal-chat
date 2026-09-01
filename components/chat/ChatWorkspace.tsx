@@ -16,7 +16,7 @@ import {
   type PendingMemberRemoval,
 } from '@/components/chat/NewConversationDialogs';
 import { Sidebar } from '@/components/chat/Sidebar';
-import { AttachmentDialog, SettingsDialog } from '@/components/chat/SystemDialogs';
+import { SettingsDialog } from '@/components/chat/SystemDialogs';
 import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { hasNameCollision } from '@/lib/chat/format';
@@ -28,13 +28,15 @@ import {
   selectHistoryState,
   selectMessages,
   selectSelectedConversation,
+  selectSharedFiles,
+  selectUploads,
   selectUsersById,
 } from '@/lib/chat/state';
 import { useChatSession } from '@/lib/chat/useChatSession';
 import { cn } from '@/lib/ui/cn';
 import { useMediaQuery } from '@/lib/ui/useMediaQuery';
 
-type DialogName = 'new-chat' | 'new-group' | 'add-members' | 'attachment' | 'settings';
+type DialogName = 'new-chat' | 'new-group' | 'add-members' | 'settings';
 
 /**
  * The application shell: header, conversation sidebar, chat panel and details panel, plus the
@@ -44,9 +46,8 @@ type DialogName = 'new-chat' | 'new-group' | 'add-members' | 'attachment' | 'set
  * `useChatSession` owns that, and everything below this component is presentational and receives
  * data and callbacks (docs/01-architecture.md §4, "Layer rules").
  *
- * Conversations, messages, presence, group membership and identity are all real and come from the
- * server. File transfer is Phase 7, and that one control is present and says so rather than doing
- * something that only looks like it worked.
+ * Conversations, messages, presence, group membership, file transfer and identity are all real
+ * and come from the server.
  *
  * IDENTITY IS NOT A CONTROL HERE. There is no name entry, no sign-out, no switch-user and no
  * clear-identity anywhere below this component: the computer is assigned to an employee by an
@@ -148,6 +149,10 @@ export function ChatWorkspace() {
   const history = selectedConversation
     ? selectHistoryState(state, selectedConversation.id)
     : null;
+  const uploads = selectedConversation ? selectUploads(state, selectedConversation.id) : [];
+  const sharedFiles = selectedConversation
+    ? selectSharedFiles(state, selectedConversation.id)
+    : { loading: false, files: [] };
 
   /*
    * Colleagues who could be added to the open group: the directory minus the people already in
@@ -260,6 +265,9 @@ export function ChatWorkspace() {
                 hasOlderMessages={history?.hasMore ?? false}
                 onLoadOlder={session.loadOlderMessages}
                 onRetry={session.retryMessage}
+                uploads={uploads}
+                onCancelUpload={session.cancelUpload}
+                onDismissUpload={session.dismissUpload}
               />
 
               <MessageComposer
@@ -267,7 +275,9 @@ export function ChatWorkspace() {
                 key={selectedConversation.id}
                 conversationTitle={selectedTitle}
                 onSend={session.sendMessage}
-                onAttachFile={() => setOpenDialog('attachment')}
+                onSendFile={session.sendFile}
+                uploading={uploads.some((upload) => upload.state === 'UPLOADING')}
+                maxFileSize={currentUser.maxFileSize}
               />
             </>
           ) : (
@@ -299,6 +309,8 @@ export function ChatWorkspace() {
                 onClose={() => setDetailsOverride(false)}
                 onAddMembers={openAddMembers}
                 onRequestRemove={requestRemoval}
+                sharedFiles={sharedFiles.files}
+                filesLoading={sharedFiles.loading}
               />
             </aside>
           </>
@@ -336,7 +348,6 @@ export function ChatWorkspace() {
         onCancel={() => setPendingRemoval(null)}
         onConfirm={confirmRemoval}
       />
-      <AttachmentDialog open={openDialog === 'attachment'} onClose={closeDialog} />
       <SettingsDialog
         open={openDialog === 'settings'}
         currentUser={currentUserSummary}

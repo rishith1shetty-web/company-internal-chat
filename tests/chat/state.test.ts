@@ -58,6 +58,7 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
     clientMessageId: 'client-1',
     type: 'TEXT',
     body: 'hello',
+    attachment: null,
     createdAt: '2026-08-28T10:00:00.000Z',
     ...overrides,
   };
@@ -67,7 +68,13 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
 function workspace(): ChatState {
   return apply(
     initialChatState,
-    { type: 'identity-ready', userId: ALICE, displayName: 'Alice', deviceLabel: 'PC-001' },
+    {
+        type: 'identity-ready',
+        userId: ALICE,
+        displayName: 'Alice',
+        deviceLabel: 'PC-001',
+        maxFileSize: 524_288_000,
+      },
     {
       type: 'conversations-loaded',
       conversations: [conversation()],
@@ -273,7 +280,13 @@ describe('chat reducer', () => {
 
     const state = apply(
       initialChatState,
-      { type: 'identity-ready', userId: ALICE, displayName: 'Alice', deviceLabel: 'PC-001' },
+      {
+        type: 'identity-ready',
+        userId: ALICE,
+        displayName: 'Alice',
+        deviceLabel: 'PC-001',
+        maxFileSize: 524_288_000,
+      },
       {
         type: 'conversations-loaded',
         conversations: [
@@ -317,7 +330,13 @@ describe('chat reducer', () => {
 
     const state = apply(
       initialChatState,
-      { type: 'identity-ready', userId: ALICE, displayName: 'Alice', deviceLabel: 'PC-001' },
+      {
+        type: 'identity-ready',
+        userId: ALICE,
+        displayName: 'Alice',
+        deviceLabel: 'PC-001',
+        maxFileSize: 524_288_000,
+      },
       {
         type: 'conversations-loaded',
         conversations: [
@@ -374,6 +393,9 @@ describe('chat reducer', () => {
       id: ALICE,
       displayName: 'Alice',
       deviceLabel: 'PC-001',
+      // Carried from the server's answer, not decided here. The composer reads it to refuse an
+      // oversized file early; the server enforces the same number regardless (Phase 7).
+      maxFileSize: 524_288_000,
     });
 
     // There is no action that edits an identity: the reducer's action union has none, and this

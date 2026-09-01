@@ -143,6 +143,17 @@ export interface SocketData {
   deviceId: string | null;
 }
 
+/**
+ * A stored message as it travels to a browser — the one mapping, used by the socket and by every
+ * REST route (`lib/http/serialize.ts` delegates here).
+ *
+ * `byteSize` becomes a decimal string because the column is a `BigInt`: `JSON.stringify` refuses
+ * one outright, and converting to a number would silently trade exactness for convenience on a
+ * value the interface only ever formats.
+ *
+ * There is no `storageKey` in the output and none in the input type. A browser is given an
+ * attachment id and nothing else about where the bytes live.
+ */
 export function toMessageWire(message: {
   id: string;
   conversationId: string;
@@ -151,6 +162,14 @@ export function toMessageWire(message: {
   type: 'TEXT' | 'FILE' | 'SYSTEM';
   body: string | null;
   createdAt: Date;
+  attachment?: {
+    id: string;
+    originalFilename: string;
+    byteSize: bigint;
+    mimeType: string;
+    extension: string;
+    createdAt: Date;
+  } | null;
 }): MessageWire {
   return {
     id: message.id,
@@ -160,5 +179,15 @@ export function toMessageWire(message: {
     type: message.type,
     body: message.body,
     createdAt: message.createdAt.toISOString(),
+    attachment: message.attachment
+      ? {
+          id: message.attachment.id,
+          filename: message.attachment.originalFilename,
+          byteSize: message.attachment.byteSize.toString(),
+          mimeType: message.attachment.mimeType,
+          extension: message.attachment.extension,
+          createdAt: message.attachment.createdAt.toISOString(),
+        }
+      : null,
   };
 }

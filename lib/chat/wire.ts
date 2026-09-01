@@ -45,6 +45,30 @@ export type Ack<T> = { ok: true; data: T } | { ok: false; error: SocketError };
 
 export type MessageKindWire = 'TEXT' | 'FILE' | 'SYSTEM';
 
+/**
+ * A file attached to a message (Phase 7).
+ *
+ * Metadata only, and deliberately not everything the row holds. There is no `storageKey` here and
+ * there never will be: the physical location of a file is a server detail, and a browser that
+ * cannot name a path cannot ask for one. `byteSize` is a string because the column is a BigInt —
+ * JSON numbers lose precision long before 500 MB, but sending it as a number invites somebody to
+ * do arithmetic on it in a language where that is only usually safe.
+ *
+ * The download URL is built from `id` alone; every request through it is authorized afresh.
+ */
+export interface AttachmentWire {
+  id: string;
+  /** As the sender's computer had it, sanitized. Rendered as text, never used as a path. */
+  filename: string;
+  /** Decimal string. */
+  byteSize: string;
+  /** Detected server-side from the leading bytes. A label — never what a download is served as. */
+  mimeType: string;
+  /** Lower-cased, dot-less, possibly empty. For an icon, never for a decision. */
+  extension: string;
+  createdAt: string;
+}
+
 /** A message as it travels to a browser. */
 export interface MessageWire {
   id: string;
@@ -54,6 +78,8 @@ export interface MessageWire {
   type: MessageKindWire;
   body: string | null;
   createdAt: string;
+  /** Present on `FILE` messages. Null on every other kind. */
+  attachment: AttachmentWire | null;
 }
 
 export interface PresenceWire {
@@ -110,6 +136,16 @@ export interface SessionIdentityWire {
   userId: string;
   displayName: string;
   deviceLabel: string;
+  /**
+   * The configured upload ceiling in bytes, so the composer can refuse an oversized file before
+   * spending minutes sending it.
+   *
+   * Sent rather than compiled into the browser bundle: it is `MAX_FILE_SIZE` from the server's
+   * environment, and a second copy in the client would be a number to keep in step by hand. It is
+   * a courtesy, not a control — the server enforces the same limit while the bytes arrive, and
+   * would enforce it against a browser that ignored this value entirely.
+   */
+  maxFileSize: number;
 }
 
 /**
@@ -137,6 +173,8 @@ export interface MessagePreviewWire {
   type: MessageKindWire;
   body: string | null;
   createdAt: string;
+  /** The filename, so the sidebar can preview a file without a second request. */
+  attachmentFilename: string | null;
 }
 
 export interface ConversationWire {
@@ -181,6 +219,16 @@ export interface ConversationCreatedWire {
 export interface ConversationMembersWire {
   conversation: ConversationWire | null;
   users: UserWire[];
+}
+
+/**
+ * `GET /api/conversations/:id/attachments` — the Shared files panel.
+ *
+ * Bounded by the caller's `joinedAt` exactly as message history is, so a newly added group member
+ * cannot use this list to learn that older files exist, let alone open them.
+ */
+export interface ConversationAttachmentsWire {
+  attachments: (AttachmentWire & { uploaderId: string | null; messageId: string | null })[];
 }
 
 /** `GET /api/conversations/:id/messages` — oldest first. */

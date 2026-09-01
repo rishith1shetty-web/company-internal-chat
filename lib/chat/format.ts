@@ -125,3 +125,48 @@ export function memberCountLabel(conversation: Conversation): string {
   const count = conversation.members.length;
   return `${count} ${count === 1 ? 'member' : 'members'}`;
 }
+
+/**
+ * A byte count as a person would say it: "312 KB", "1.4 GB".
+ *
+ * Base-1024 with the familiar KB/MB/GB labels, which is what Windows and every file manager the
+ * staff use show — being pedantically correct with KiB here would just look wrong to them.
+ *
+ * Takes a string because the wire carries `byteSize` as a decimal string (the column is a
+ * BigInt). An unparseable value produces an empty label rather than "NaN B".
+ */
+export function formatFileSize(bytes: string | number): string {
+  const value = typeof bytes === 'number' ? bytes : Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return '';
+  if (value === 0) return 'Empty file';
+  if (value < 1024) return `${value} B`;
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let unit = 0;
+
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+
+  // One decimal below 10 so "1.4 MB" is not rounded to "1 MB"; none above, where it is noise.
+  return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[unit]}`;
+}
+
+/**
+ * A short, uppercase label for a file — "PDF", "XLSX", "MP4", or "FILE".
+ *
+ * Cosmetic only. Nothing in this application behaves differently because of it, which is what
+ * makes it safe to derive from a name the sender chose.
+ */
+export function fileTypeLabel(attachment: { filename: string; extension: string }): string {
+  if (attachment.extension.length > 0) return attachment.extension.toUpperCase().slice(0, 5);
+
+  const dot = attachment.filename.lastIndexOf('.');
+  if (dot > 0 && dot < attachment.filename.length - 1) {
+    return attachment.filename.slice(dot + 1).toUpperCase().slice(0, 5);
+  }
+
+  return 'FILE';
+}

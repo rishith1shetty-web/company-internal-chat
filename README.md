@@ -3,7 +3,7 @@
 A privately hosted, browser-based chat and file-transfer application for internal company use.
 Runs on the company's own server: no cloud services, no client installation.
 
-**Current status: Phase 6 complete — one-to-one and group chat, with admin-assigned identity.**
+**Current status: Phase 7 complete — one-to-one chat, group chat and file transfer.**
 An administrator assigns each company computer to a named employee; whoever sits at it opens the
 application and is already recognised, with nothing to sign in to and no way to change who they
 are. Colleagues find each other, hold private conversations, and create named groups — all
@@ -14,8 +14,12 @@ Somebody added to a group sees it from the moment they join, and not what was sa
 is deleted to achieve that: the earlier messages stay exactly where they are, readable by the
 members who were there for them.
 
-File transfer and network restriction follow in Phases 7–8; the attachment control is present in
-the interface and says so rather than appearing to work.
+Files go with the conversation. Any file type, up to a configurable 500 MB, stored on the
+company's own server and downloaded only through the application after it has checked that the
+person asking is in the conversation — and, for a group, that the file was shared after they
+joined. Nothing uploaded is ever opened or rendered by the server.
+
+Network restriction follows in Phase 8.
 
 ## Scope of version 1
 
@@ -40,6 +44,14 @@ deferred to Phase 11 and must not appear before then.
 4. When the computer changes hands, press **Reassign** in `/admin` and enter the new employee's
    name. The new employee gets their own account and their own history; the previous employee's is
    kept and is not transferred. Nobody needs to visit the machine.
+
+### Sending a file
+
+Use the paperclip in the message box. Any file type is accepted — documents, spreadsheets, video,
+archives, images, whatever a colleague needs — up to the configured limit. The name and size are
+shown before it sends, so a wrong file can be taken back. Files appear in the conversation and in
+**Shared files** in the details panel, and download through the application rather than from a
+public folder.
 
 ### Using a group
 
@@ -71,6 +83,7 @@ afterwards.
 | [docs/11-phase-5-direct-chat.md](docs/11-phase-5-direct-chat.md) | **One-to-one chat: REST endpoints, directory, conversation resolution, history pagination, unread counts, reconnection, tests** |
 | [docs/12-admin-device-identity.md](docs/12-admin-device-identity.md) | **Admin-assigned identity: the device registry, setup codes, assignment and reassignment flows, admin access and its limits** |
 | [docs/13-phase-6-group-chat.md](docs/13-phase-6-group-chat.md) | **Group chat: creation, membership, roles, the join-bounded history window and where its timestamp comes from, real-time membership changes, tests** |
+| [docs/14-phase-7-file-transfer.md](docs/14-phase-7-file-transfer.md) | **File transfer: streaming upload, storage design, download authorization, why there is no type allowlist, failure and rollback behaviour, production storage setup, tests** |
 
 ## Stack
 
