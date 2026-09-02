@@ -19,9 +19,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import next from 'next';
 
-import { loadConfig, ConfigError } from './lib/config/env';
+import { assertNetworkPolicyConfigured, loadConfig, ConfigError } from './lib/config/env';
 import { disconnectDb, getDb } from './lib/db/prisma';
 import { createLogger, describeError, type Logger } from './lib/logging/logger';
+import { createNetworkGate } from './lib/net/gate';
 import { SOCKET_PATH } from './lib/realtime/events';
 import { createRealtimeGateway, type RealtimeGateway } from './lib/realtime/gateway';
 
@@ -43,6 +44,16 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
 
+  /*
+   * Fail closed before anything else happens (Phase 8).
+   *
+   * Checked here rather than inside `loadConfig` because `next build` evaluates route modules —
+   * and therefore the configuration — with NODE_ENV=production, and a build machine has no
+   * business knowing the company's address ranges. This is the moment that actually matters: a
+   * process about to accept traffic.
+   */
+  assertNetworkPolicyConfigured(config);
+
   const logger = createLogger({
     level: config.logLevel,
     pretty: !config.isProduction,
@@ -57,7 +68,35 @@ async function main(): Promise<void> {
 
   await app.prepare();
 
+  /*
+   * The network gate (Phase 8).
+   *
+   * Built once, from configuration, and consulted by both enforcement points: this request
+   * listener and the Socket.IO handshake below. See lib/net/gate.ts for why both are needed —
+   * engine.io intercepts the socket transport before this listener ever sees it.
+   */
+  const gate = createNetworkGate({ policy: config.networkPolicy, logger });
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    /*
+     * FIRST, BEFORE NEXT.JS SEES THE REQUEST.
+     *
+     * One check, here, covers every page, every API route, /admin, /setup, attachment uploads
+     * and attachment downloads — because all of them are served by the handler below and none of
+     * them can be reached without passing this line. That is the whole reason the check lives at
+     * the server rather than being repeated in route handlers, where a new route would have to
+     * remember to include it (CLAUDE.md §9).
+     *
+     * It is also the only layer that CAN do this: a Next.js route handler receives a `Request`,
+     * which has headers but no socket, so it cannot see the peer address at all. Anything
+     * enforced in there would necessarily be trusting a header.
+     */
+    const decision = gate.check(req.socket.remoteAddress, req.headers, req.url ?? '/');
+    if (!decision.allowed) {
+      gate.denyHttp(req, res);
+      return;
+    }
+
     // Next's handler returns a promise; an unhandled rejection here would take down the
     // process, so every request failure is caught, logged, and answered generically.
     void handleRequest(req, res).catch((error: unknown) => {
@@ -100,6 +139,9 @@ async function main(): Promise<void> {
         sessionTtlHours: config.sessionTtlHours,
         deviceTtlDays: config.deviceTtlDays,
       },
+      // The same gate object, so the socket and the HTTP surface can never drift apart on who
+      // is allowed in, and a denial from either is throttled by one shared log budget.
+      gate,
     });
     logger.info('Realtime gateway attached', { path: SOCKET_PATH });
   } else {
@@ -123,9 +165,39 @@ async function main(): Promise<void> {
     // Redacted: role, host, port and database name only, never the password (CLAUDE.md §14).
     // No connection is opened here — the client connects lazily on first use.
     database: config.databaseTarget ?? 'not configured',
+    /*
+     * How many ranges are permitted and whether forwarding headers are believed — but never the
+     * ranges themselves. An operator needs to know the policy is the one they configured, and
+     * the count plus the source tells them that; printing the allow-list into a log file that
+     * gets pasted into a ticket does not (CLAUDE.md §14).
+     */
+    network: config.networkPolicyConfigured
+      ? `${config.networkPolicy.allowed.length} allowed range(s) from ALLOWED_NETWORKS`
+      : 'loopback only (ALLOWED_NETWORKS not set)',
+    trustedProxies: config.networkPolicy.trustedProxies.length,
   });
 
+  /*
+   * A bind address that is not loopback, with a policy nobody configured, is the one combination
+   * that is almost certainly a mistake: the server is reachable from the LAN and will refuse
+   * every employee on it. Said plainly at startup, because the symptom otherwise appears as
+   * "the app is broken" rather than "the app is not configured".
+   */
+  if (!config.networkPolicyConfigured && !isLoopbackHost(config.bindHost)) {
+    logger.warn(
+      'Bound to a non-loopback interface with no ALLOWED_NETWORKS: every request from the ' +
+        'network will be refused. Set ALLOWED_NETWORKS to the company ranges.',
+      { bindHost: config.bindHost },
+    );
+  }
+
   installShutdownHandlers(server, app, logger, gateway);
+}
+
+/** Loopback in either family, plus the hostname form. Used only for the startup warning above. */
+function isLoopbackHost(host: string): boolean {
+  const value = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return value === 'localhost' || value === '::1' || value.startsWith('127.');
 }
 
 function installShutdownHandlers(

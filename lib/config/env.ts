@@ -20,6 +20,8 @@
 import { isAbsolute, resolve, sep } from 'node:path';
 
 import { DatabaseTargetError, parseDatabaseUrl } from '../db/target';
+import { LOOPBACK_RULES, parseCidrList, type CidrRule } from '../net/ip';
+import type { NetworkPolicy } from '../net/policy';
 
 export type NodeEnvironment = 'development' | 'production' | 'test';
 
@@ -78,6 +80,17 @@ export interface AppConfig {
    * one fails with its own clear message (lib/db/prisma.ts).
    */
   databaseTarget: string | undefined;
+  /**
+   * Who may reach this application, and whose forwarding headers are believed (Phase 8).
+   *
+   * Always present — there is no "restriction disabled" state. In production the ranges must be
+   * configured explicitly or the process refuses to start; everywhere else the default is
+   * loopback only, which is the tightest policy there is rather than the loosest
+   * (docs/16-phase-8-network-restriction.md).
+   */
+  networkPolicy: NetworkPolicy;
+  /** True when ALLOWED_NETWORKS was set, rather than defaulted to loopback. For the startup log. */
+  networkPolicyConfigured: boolean;
 }
 
 const VALID_NODE_ENVS: readonly NodeEnvironment[] = ['development', 'production', 'test'];
@@ -270,6 +283,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const databaseTarget = parseDatabaseTarget(readOptional(env, 'DATABASE_URL'), problems);
 
+  const rawAllowedNetworks = readOptional(env, 'ALLOWED_NETWORKS');
+  const allowed = parseAllowedNetworks(rawAllowedNetworks, problems);
+  const trustedProxies = parseTrustedProxies(readOptional(env, 'TRUSTED_PROXY_IPS'), problems);
+
   if (problems.length > 0) throw new ConfigError(problems);
 
   return {
@@ -287,15 +304,104 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     uploadDir,
     maxFileSize,
     databaseTarget,
+    networkPolicy: { allowed, trustedProxies },
+    networkPolicyConfigured: rawAllowedNetworks !== undefined,
   };
+}
+
+/**
+ * ALLOWED_NETWORKS — the ranges permitted to reach the application (Phase 8).
+ *
+ * With no value set the default is LOOPBACK ONLY. Note which direction that goes: it is the
+ * *tightest* policy available, not a relaxation. That matters because NODE_ENV is a string an
+ * operator can get wrong, and this arrangement means getting it wrong can only lock people out —
+ * never let outsiders in. There is deliberately no branch anywhere in this file that widens
+ * access because the environment is not production.
+ *
+ * The production requirement — that a real policy must be configured, not defaulted — is NOT
+ * enforced here. See `assertNetworkPolicyConfigured` below for where it lives and why.
+ *
+ * A malformed entry is a configuration failure rather than a skipped rule, in every environment.
+ * Dropping an unparsable range would silently produce a narrower allow-list than the operator
+ * wrote, which fails on a Monday morning and looks like an outage rather than a configuration
+ * error.
+ */
+function parseAllowedNetworks(raw: string | undefined, problems: string[]): readonly CidrRule[] {
+  if (raw === undefined) return LOOPBACK_RULES;
+
+  const { rules, invalid } = parseCidrList(raw);
+
+  for (const entry of invalid) {
+    problems.push(
+      `ALLOWED_NETWORKS contains an invalid address or CIDR range: "${entry}" ` +
+        '(expected forms: 192.168.1.0/24, 10.0.0.5, ::1, fd00::/8; host bits must be zero)',
+    );
+  }
+
+  if (rules.length === 0 && invalid.length === 0) {
+    problems.push('ALLOWED_NETWORKS is set but lists no ranges — remove it or give it a value');
+    return LOOPBACK_RULES;
+  }
+
+  return rules;
+}
+
+/**
+ * FAIL CLOSED: a production server must have a real network policy, not the loopback default.
+ *
+ * WHY THIS IS SEPARATE FROM `loadConfig`. Route handlers import the configuration at module
+ * scope, and `next build` evaluates those modules with NODE_ENV=production while collecting page
+ * data. Enforcing the rule inside `loadConfig` therefore broke the build — and it should: a build
+ * machine has no business knowing the company's address ranges, and requiring them to compile
+ * would push a production secret into every environment that ever builds the app.
+ *
+ * The rule belongs where it actually matters, which is the moment a process is about to accept
+ * traffic. `server.ts` calls this immediately before `listen()`, so a production server with no
+ * policy configured refuses to start — the setting that decides who can read the company's
+ * conversations is not one that can be forgotten — while a build, a test run and a type-check
+ * are unaffected.
+ *
+ * Throws `ConfigError`, so the operator sees the same plain message as any other bad setting.
+ */
+export function assertNetworkPolicyConfigured(config: AppConfig): void {
+  if (!config.isProduction || config.networkPolicyConfigured) return;
+
+  throw new ConfigError([
+    'ALLOWED_NETWORKS must be set in production — list the company ranges permitted to reach ' +
+      'this application, e.g. "192.168.1.0/24" (see docs/16-phase-8-network-restriction.md)',
+  ]);
+}
+
+/**
+ * TRUSTED_PROXY_IPS — peers whose `X-Forwarded-For` is believed (Phase 8).
+ *
+ * Unset means forwarding headers are IGNORED ENTIRELY, which is both the default and the
+ * correct setting for the V1 deployment, where the Node process is what employees connect to.
+ * Trusting the header without this list would turn the allow-list into a value the client
+ * supplies (docs/16-phase-8-network-restriction.md §5, lib/net/policy.ts).
+ */
+function parseTrustedProxies(raw: string | undefined, problems: string[]): readonly CidrRule[] {
+  if (raw === undefined) return [];
+
+  const { rules, invalid } = parseCidrList(raw);
+
+  for (const entry of invalid) {
+    problems.push(
+      `TRUSTED_PROXY_IPS contains an invalid address or CIDR range: "${entry}"`,
+    );
+  }
+
+  return rules;
 }
 
 /*
  * Deferred configuration — documented in .env.example, added here by the phase that needs it:
  *
  *   Phase 4  (none)                    the realtime layer reuses PORT / APP_URL
- *   Phase 8  ALLOWED_NETWORKS          CIDRs permitted to reach the application
- *            TRUSTED_PROXY_IPS         peers whose forwarding headers are believed
+ *   Phase 8  ALLOWED_NETWORKS          IMPLEMENTED above
+ *            TRUSTED_PROXY_IPS         IMPLEMENTED above
+ *
+ * Nothing remains deferred here.
  *
  * ALLOWED_FILE_EXTENSIONS was listed here for Phase 7 and is deliberately NOT implemented. The
  * company transfers arbitrary business files — video, archives, source, exports, anything a

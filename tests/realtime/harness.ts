@@ -10,7 +10,12 @@
  * test run is read or modified.
  */
 
-import { createServer, type Server as HttpServer } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -20,6 +25,7 @@ import { SESSION_COOKIE, DEVICE_COOKIE } from '@/lib/auth/session';
 import { assignDevice, enrollDevice, type EnrollmentConfig } from '@/lib/devices/service';
 import type { Logger } from '@/lib/logging/logger';
 import { parseDatabaseUrl } from '@/lib/db/target';
+import type { NetworkGate } from '@/lib/net/gate';
 import { createRealtimeGateway, type RealtimeGateway } from '@/lib/realtime/gateway';
 import type {
   Ack,
@@ -77,9 +83,35 @@ export interface RunningServer {
  * socket layer and its authorization, not page rendering.
  */
 export async function startTestServer(
-  options: { logger?: Logger; presenceGraceMs?: number } = {},
+  options: {
+    logger?: Logger;
+    presenceGraceMs?: number;
+    /**
+     * The Phase 8 network gate. Wired exactly as server.ts wires it — checked before the request
+     * handler, and handed to the gateway — so a test exercises the real arrangement rather than
+     * a re-implementation of it.
+     */
+    gate?: NetworkGate;
+    /** Stands in for Next.js: called only when a request gets past the gate. */
+    onRequest?: (req: IncomingMessage, res: ServerResponse) => void;
+  } = {},
 ): Promise<RunningServer> {
-  const httpServer = createServer((_req, res) => {
+  const { gate } = options;
+
+  const httpServer = createServer((req, res) => {
+    if (gate) {
+      const decision = gate.check(req.socket.remoteAddress, req.headers, req.url ?? '/');
+      if (!decision.allowed) {
+        gate.denyHttp(req, res);
+        return;
+      }
+    }
+
+    if (options.onRequest) {
+      options.onRequest(req, res);
+      return;
+    }
+
     res.statusCode = 404;
     res.end();
   });
@@ -89,6 +121,7 @@ export async function startTestServer(
     logger: options.logger ?? silentLogger(),
     identity: IDENTITY_CONFIG,
     presenceGraceMs: options.presenceGraceMs ?? TEST_PRESENCE_GRACE_MS,
+    ...(gate ? { gate } : {}),
   });
 
   await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));

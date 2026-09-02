@@ -19,7 +19,10 @@ company's own server and downloaded only through the application after it has ch
 person asking is in the conversation — and, for a group, that the file was shared after they
 joined. Nothing uploaded is ever opened or rendered by the server.
 
-Network restriction follows in Phase 8.
+Access is restricted to the company network. Every request and every real-time connection is
+checked against a configured set of address ranges before anything else runs — before the page,
+before the session, before the conversation check — so an attachment link carried outside the
+company fails even with a valid cookie. Production refuses to start without a policy configured.
 
 ## Scope of version 1
 
@@ -84,6 +87,8 @@ afterwards.
 | [docs/12-admin-device-identity.md](docs/12-admin-device-identity.md) | **Admin-assigned identity: the device registry, setup codes, assignment and reassignment flows, admin access and its limits** |
 | [docs/13-phase-6-group-chat.md](docs/13-phase-6-group-chat.md) | **Group chat: creation, membership, roles, the join-bounded history window and where its timestamp comes from, real-time membership changes, tests** |
 | [docs/14-phase-7-file-transfer.md](docs/14-phase-7-file-transfer.md) | **File transfer: streaming upload, storage design, download authorization, why there is no type allowlist, failure and rollback behaviour, production storage setup, tests** |
+| [docs/15-brand-refresh.md](docs/15-brand-refresh.md) | Brand and interface refresh: the palette derived from the company logo, measured contrast, where the logo is used, design tokens |
+| [docs/16-phase-8-network-restriction.md](docs/16-phase-8-network-restriction.md) | **Company-network restriction: the two enforcement points and why both are needed, CIDR configuration, client-IP resolution and proxy trust, fail-closed production behaviour, binding, tests** |
 
 ## Stack
 
@@ -130,6 +135,31 @@ Copy-Item .env.example .env   # Windows PowerShell
 ```
 
 `.env` is git-ignored and must never be committed. `.env.example` holds placeholders only.
+
+### Network access
+
+The application answers only clients inside `ALLOWED_NETWORKS`. **Development needs no
+configuration**: with the variable unset the policy is loopback only, so `http://localhost:3000`
+works as it always has.
+
+For a company server, set the ranges and the interface together:
+
+```bash
+BIND_HOST=0.0.0.0                 # reachable from the LAN
+ALLOWED_NETWORKS=192.168.1.0/24   # ...but only by these addresses
+```
+
+`BIND_HOST` is what exposes the application; `ALLOWED_NETWORKS` decides who may use it. **In
+production the process refuses to start if `ALLOWED_NETWORKS` is not set** — the setting that
+decides who can read the company's conversations is not one that can be forgotten.
+
+To exercise the restriction locally, invert the policy rather than trying to fake a source
+address — `ALLOWED_NETWORKS=10.99.0.0/24 npm start` makes your own machine an outside client and
+every request returns 403.
+
+Forwarding headers such as `X-Forwarded-For` are **ignored** unless `TRUSTED_PROXY_IPS` names the
+proxy they came from. See
+[docs/16-phase-8-network-restriction.md](docs/16-phase-8-network-restriction.md).
 
 ### Commands
 

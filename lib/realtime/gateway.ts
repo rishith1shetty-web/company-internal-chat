@@ -38,6 +38,7 @@ import {
 import type { Logger } from '../logging/logger';
 import { describeError } from '../logging/logger';
 import { SendMessageError, sendMessage } from '../messages/service';
+import type { NetworkGate } from '../net/gate';
 import {
   SOCKET_PATH,
   joinConversationSchema,
@@ -68,6 +69,14 @@ export interface GatewayDependencies {
   identity: IdentityConfig;
   /** Overridable so tests do not have to wait out the real presence grace period. */
   presenceGraceMs?: number;
+  /**
+   * The network gate (Phase 8).
+   *
+   * Optional only so the realtime test harness can build a gateway without one. In the running
+   * application server.ts always supplies it, and when it is absent the socket layer is
+   * unrestricted — which is why the absence is logged loudly at construction below.
+   */
+  gate?: NetworkGate;
 }
 
 export interface RealtimeGateway {
@@ -117,10 +126,36 @@ export function createRealtimeGateway(
   httpServer: HttpServer,
   deps: GatewayDependencies,
 ): RealtimeGateway {
-  const { db, logger, identity } = deps;
+  const { db, logger, identity, gate } = deps;
 
   const io: ChatServer = new Server(httpServer, {
     path: SOCKET_PATH,
+    /*
+     * NETWORK RESTRICTION, AT THE HANDSHAKE (Phase 8).
+     *
+     * This is not defence in depth — it is the only place the socket transport can be gated.
+     * When engine.io attaches it caches the HTTP server's `request` listeners, removes them, and
+     * calls them only for requests it does not claim itself. Socket.IO's polling transport
+     * therefore never reaches the check in server.ts, and the WebSocket upgrade arrives on the
+     * `upgrade` event, which that listener never sees either. `allowRequest` runs for the
+     * initial handshake of BOTH transports (engine.io `verify()`), so it is the one hook that
+     * covers the whole surface.
+     *
+     * Refusing here means the connection is rejected before engine.io creates a session: no
+     * socket, so no identity lookup, no room join, no presence, and no message delivery. The
+     * client sees a transport error and nothing about why.
+     */
+    allowRequest: (req, callback) => {
+      if (!gate) {
+        callback(undefined, true);
+        return;
+      }
+
+      const decision = gate.check(req.socket.remoteAddress, req.headers, SOCKET_PATH);
+      // engine.io turns `false` into a 403 with an opaque code. The message is never sent to the
+      // client in a form that describes the policy.
+      callback(decision.allowed ? undefined : 'FORBIDDEN', decision.allowed);
+    },
     // Same origin by construction: no CORS configuration, so no chance of accidentally
     // permitting one. A cross-origin browser cannot open this socket.
     cors: { origin: false },
@@ -140,6 +175,43 @@ export function createRealtimeGateway(
   const presence = new PresenceTracker(
     deps.presenceGraceMs === undefined ? {} : { graceMs: deps.presenceGraceMs },
   );
+
+  if (!gate) {
+    logger.warn('Realtime gateway created without a network gate: socket access is unrestricted');
+  }
+
+  /*
+   * Network restriction, re-checked per socket (Phase 8).
+   *
+   * REGISTERED FIRST, ahead of identity, so an address outside the company network is turned
+   * away before a cookie is read or the database is touched — the requirement is that an outside
+   * client cannot establish a socket, not that it fails a later check.
+   *
+   * `allowRequest` above already refused the handshake, so in normal operation this never fires.
+   * It exists for the one case that hook does not cover: engine.io skips `allowRequest` for a
+   * request that carries an existing session id, so a connection resumed with a stolen `sid`
+   * would otherwise not be re-evaluated. Cheap, and it keeps the socket layer's answer to "who
+   * is allowed here" identical to the HTTP layer's on every connection rather than once.
+   */
+  io.use((socket, next) => {
+    if (!gate) {
+      next();
+      return;
+    }
+
+    const decision = gate.check(
+      socket.conn.remoteAddress,
+      socket.handshake.headers,
+      SOCKET_PATH,
+    );
+
+    if (!decision.allowed) {
+      next(new Error('FORBIDDEN'));
+      return;
+    }
+
+    next();
+  });
 
   /*
    * Handshake authentication.

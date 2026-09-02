@@ -44,6 +44,7 @@ import {
   initialChatState,
   type ChatState,
 } from '@/lib/chat/state';
+import { newClientMessageId } from '@/lib/chat/ids';
 import { createChatSocket, type ChatSocketClient } from '@/lib/chat/socket';
 import type { ChatMessage } from '@/lib/chat/types';
 
@@ -601,7 +602,7 @@ export function useChatSession(): ChatSession {
       const trimmed = body.trim();
       if (!conversationId || trimmed.length === 0) return;
 
-      const clientMessageId = crypto.randomUUID();
+      const clientMessageId = newClientMessageId();
 
       dispatch({
         type: 'message-queued',
@@ -633,7 +634,7 @@ export function useChatSession(): ChatSession {
       const conversationId = openConversationRef.current;
       if (!conversationId) return;
 
-      const clientMessageId = crypto.randomUUID();
+      const clientMessageId = newClientMessageId();
 
       dispatch({
         type: 'upload-started',

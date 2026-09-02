@@ -4,6 +4,21 @@ Phase 0 proposal. Per `CLAUDE.md` §5 Phase 8, **no specific IP address, subnet,
 product, domain name, or router configuration is assumed anywhere in this document.** Every such
 value is a named placeholder resolved from environment configuration at deployment time.
 
+> **Updated by Phase 8.** The three-layer model below still describes the target, but two things
+> changed when it was implemented, and this document is kept as written with the corrections
+> noted here rather than being quietly rewritten:
+>
+> 1. **Layer 3 is now the primary restriction, not defence in depth.** V1 runs the Node process
+>    directly on the company server with no reverse proxy, so the application's own check is what
+>    actually enforces the boundary. It is no longer "optional middleware" — it is mandatory, it
+>    covers Socket.IO as well as HTTP, and production refuses to start without a policy.
+> 2. **nginx is not assumed.** Layer 2 is deferred to Phase 10 and may never exist; the deployment
+>    must work without it.
+>
+> The implemented behaviour is documented in
+> [16-phase-8-network-restriction.md](16-phase-8-network-restriction.md), which supersedes this
+> file wherever the two differ.
+
 ---
 
 ## 1. Company-network restriction — conceptual model
@@ -29,9 +44,11 @@ is useful on its own; the application layer is the weakest and is never the only
    ---------------------------------------------------------------------
                     |
    ============ Layer 3: Application ==================================
-   Node process binds 127.0.0.1 only. Optional middleware re-checks the
-   client address against ALLOWED_NETWORKS as defence in depth, and the
-   Socket.IO handshake validates the Origin header.
+   IMPLEMENTED IN PHASE 8, and in V1 this is the layer doing the work.
+   Every HTTP request is checked against ALLOWED_NETWORKS before Next.js
+   sees it; every Socket.IO handshake is checked before a socket exists.
+   Both read the socket's real peer address. Production fails to start
+   with no policy configured.
    ---------------------------------------------------------------------
                     |
           PostgreSQL (127.0.0.1) + file storage (local path)
@@ -64,12 +81,12 @@ here so the Phase 8 implementation cannot get it wrong by default.
 | `APP_URL` | Origin the browser uses | `https://chat.internal.example` |
 | `PORT` | Loopback port for the Node process | `3000` |
 | `BIND_HOST` | Interface the app binds | `127.0.0.1` |
-| `ALLOWED_NETWORKS` | Comma-separated CIDRs permitted to reach the app | `10.0.0.0/8,192.168.0.0/16` |
-| `TRUSTED_PROXY_IPS` | Peers whose forwarding headers are believed | `127.0.0.1` |
+| `ALLOWED_NETWORKS` | Comma-separated CIDRs permitted to reach the app. **Required in production** | `10.0.0.0/8,192.168.0.0/16` |
+| `TRUSTED_PROXY_IPS` | Peers whose forwarding headers are believed. **Unset by default — headers are then ignored entirely** | `127.0.0.1` |
 | `DATABASE_URL` | Project database only, dedicated role (see `02-database.md` §0) | `postgresql://USER:PASSWORD@localhost:5432/company_chat_db` |
 | `UPLOAD_DIR` | Absolute path to file storage | `/var/lib/company-chat/uploads` |
 | `MAX_FILE_SIZE` | Bytes — **initially 500 MB**, configurable | `524288000` |
-| `ALLOWED_FILE_EXTENSIONS` | Allowlist | `pdf,doc,docx,xls,xlsx,ppt,pptx,jpg,jpeg,png,txt,zip` |
+| `ALLOWED_FILE_EXTENSIONS` | **Not implemented** — deliberately, see Phase 7 §7 | — |
 | `SESSION_TTL_HOURS` | Idle session lifetime, renewed on activity — **initially 24** | `24` |
 | `DEVICE_ID_TTL_DAYS` | Long-lived device identity lifetime, renewed on use (D-13) | `90` |
 | `LOG_LEVEL` | | `info` |
@@ -104,9 +121,11 @@ Developer workstation (Windows 10, this machine)
 Development specifics:
 
 - No TLS locally; `Secure` on the session cookie is conditional on `NODE_ENV`.
-- `ALLOWED_NETWORKS` unset in development means the Layer-3 check is inactive; the firewall and
-  proxy layers do not exist locally. This asymmetry must be remembered when testing Phase 8 —
-  network restriction is verifiable only in an environment that has a proxy in front.
+- `ALLOWED_NETWORKS` unset in development means **loopback only** — the tightest policy, not an
+  inactive check (this is a correction: the Phase 0 text above assumed the check would be
+  skipped). `http://localhost:3000` therefore works with no configuration. To exercise the
+  restriction locally, invert the policy rather than trying to fake a source address:
+  `ALLOWED_NETWORKS=10.99.0.0/24 npm start` makes this machine an outside client.
 - Uploads go to a repository-relative, git-ignored directory. `.gitignore` must exclude it from
   the first commit (`CLAUDE.md` §15).
 - The PostgreSQL server is shared with other projects. `company_chat_db` **already exists** and is
