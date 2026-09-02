@@ -27,7 +27,7 @@ company fails even with a valid cookie. Production refuses to start without a po
 ## Scope of version 1
 
 One-to-one chat · group chat · real-time messaging · file upload and download ·
-online/offline presence · company-network-restricted access.
+online/offline presence · message notifications (sound, in-app toast and a desktop popup while the tab is in the background) · company-network-restricted access.
 
 No passwords in v1, by design, with the identity layer built so that real company authentication
 can replace it without redesign. **Identity is assigned by an administrator to a company computer**
@@ -85,6 +85,7 @@ afterwards.
 | [docs/10-phase-4-realtime.md](docs/10-phase-4-realtime.md) | **Real-time layer: Socket.IO architecture, identity, event contract, rooms, message flow, presence, tests** |
 | [docs/11-phase-5-direct-chat.md](docs/11-phase-5-direct-chat.md) | **One-to-one chat: REST endpoints, directory, conversation resolution, history pagination, unread counts, reconnection, tests** |
 | [docs/12-admin-device-identity.md](docs/12-admin-device-identity.md) | **Admin-assigned identity: the device registry, setup codes, assignment and reassignment flows, admin access and its limits** |
+| [docs/17-notifications.md](docs/17-notifications.md) | **Message notifications: sound, in-app toast, desktop popup, when each is used, and where the preferences live** |
 | [docs/13-phase-6-group-chat.md](docs/13-phase-6-group-chat.md) | **Group chat: creation, membership, roles, the join-bounded history window and where its timestamp comes from, real-time membership changes, tests** |
 | [docs/14-phase-7-file-transfer.md](docs/14-phase-7-file-transfer.md) | **File transfer: streaming upload, storage design, download authorization, why there is no type allowlist, failure and rollback behaviour, production storage setup, tests** |
 | [docs/15-brand-refresh.md](docs/15-brand-refresh.md) | Brand and interface refresh: the palette derived from the company logo, measured contrast, where the logo is used, design tokens |

@@ -22,9 +22,10 @@ interface UserMenuProps {
  * The discriminator is not decoration: display names are not unique (D-02), so the name alone
  * never establishes which user this is.
  *
- * DISPLAY-ONLY. There is no sign-out, no switch-user and no clear-identity item here any more:
+ * IDENTITY IS DISPLAY-ONLY. There is no sign-out, no switch-user and no clear-identity item here:
  * an employee cannot change who this computer is (docs/12-admin-device-identity.md). What is left
- * is Settings, which reports the assignment and changes nothing.
+ * is Settings, which reports the assignment read-only and — since the notification feature — also
+ * holds the preferences an employee does own, all of which live in this browser alone.
  */
 export function UserMenu({ currentUser, deviceLabel, onOpenSettings }: UserMenuProps) {
   const [open, setOpen] = useState(false);

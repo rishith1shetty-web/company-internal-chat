@@ -47,6 +47,12 @@ import {
 import { newClientMessageId } from '@/lib/chat/ids';
 import { createChatSocket, type ChatSocketClient } from '@/lib/chat/socket';
 import type { ChatMessage } from '@/lib/chat/types';
+import type { MessageWire } from '@/lib/chat/wire';
+import { conversationTitle, selectUsersById } from '@/lib/chat/state';
+import {
+  describeIncomingMessage,
+  type IncomingMessageEvent,
+} from '@/lib/notifications/describe';
 
 /** Initial history window. Matches the server's default; stated here so the intent is visible. */
 const HISTORY_PAGE_SIZE = 50;
@@ -77,7 +83,22 @@ export interface ChatSession {
   dismissNotice(): void;
 }
 
-export function useChatSession(): ChatSession {
+export interface ChatSessionOptions {
+  /**
+   * Called once for every message that arrives over the socket, described for display.
+   *
+   * The seam for notifications, and it is here rather than in a component because this hook is
+   * the only place that has all three facts at once: the payload, who this browser is, and which
+   * conversation is open. It is deliberately fed ONLY by `message:new` — history and the
+   * reconnect backfill are REST reads that dispatch straight into the reducer and never reach
+   * this callback, so old messages cannot be announced as new.
+   *
+   * Held in a ref, so passing a new function on every render does not tear down the socket.
+   */
+  onIncomingMessage?: (event: IncomingMessageEvent) => void;
+}
+
+export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
 
   const socketRef = useRef<ChatSocketClient | null>(null);
@@ -102,7 +123,59 @@ export function useChatSession(): ChatSession {
    */
   const uploadsRef = useRef<Map<string, () => void>>(new Map());
 
+  /*
+   * The current state and the current notification callback, for the socket handlers.
+   *
+   * Same reason as the refs above: the handlers are built once per connection. Describing an
+   * arrived message needs the conversation and the sender's name, which live in state, so the
+   * handler needs to see state as it is now rather than as it was when the socket opened.
+   * Assigned during render, read only from callbacks — never during render.
+   */
+  const stateRef = useRef(state);
+  const onIncomingMessageRef = useRef(options.onIncomingMessage);
+
+  // Written from an effect, like every other ref in this hook. An effect has flushed long before
+  // any socket callback can run, so what these hold is never behind by the time it is read.
+  useEffect(() => {
+    stateRef.current = state;
+    onIncomingMessageRef.current = options.onIncomingMessage;
+  }, [state, options.onIncomingMessage]);
+
   const currentUserId = state.currentUser?.id ?? null;
+
+  /**
+   * Describes an arrived message and hands it to the notification pipeline.
+   *
+   * Everything it needs is read from `stateRef` at call time. A conversation this browser has not
+   * heard of yet — a colleague's first message in a brand new conversation — still produces a
+   * usable notification: the title falls back to the sender's name, which is the right thing to
+   * show for a direct message and an honest approximation for a group whose name has not arrived.
+   */
+  const announce = useCallback((wire: MessageWire) => {
+    const handler = onIncomingMessageRef.current;
+    if (!handler) return;
+
+    const snapshot = stateRef.current;
+    const currentUser = snapshot.currentUser;
+    if (!currentUser) return;
+
+    const usersById = selectUsersById(snapshot);
+    const conversation = snapshot.conversations.find((item) => item.id === wire.conversationId);
+    const senderName =
+      wire.senderId === null ? null : (usersById.get(wire.senderId)?.displayName ?? null);
+
+    handler(
+      describeIncomingMessage(wire, {
+        currentUserId: currentUser.id,
+        conversationTitle: conversation
+          ? conversationTitle(conversation, currentUser.id, usersById)
+          : (senderName ?? 'New message'),
+        isGroup: conversation?.type === 'GROUP',
+        senderName,
+        isOpenConversation: openConversationRef.current === wire.conversationId,
+      }),
+    );
+  }, []);
 
   /* ----------------------------------------------------------------------------------------- */
   /* Failure handling                                                                            */
@@ -350,6 +423,17 @@ export function useChatSession(): ChatSession {
         dispatch({ type: 'message-received', message: wire });
 
         /*
+         * Announce it, before anything below returns early.
+         *
+         * Placed first on purpose: the branch underneath returns when the conversation is not
+         * yet known to this browser, and that is exactly the case of a colleague opening a NEW
+         * conversation with their first message — the one arrival that most deserves a
+         * notification. Describing it from the state we already have costs nothing, and the
+         * conversation list re-read that follows only affects what the sidebar shows.
+         */
+        announce(wire);
+
+        /*
          * A message for a conversation this browser has never heard of: it was created after this
          * socket connected. Re-read the list rather than inventing a conversation locally — and
          * re-read presence too, because the other party has only just become a presence peer and
@@ -408,6 +492,7 @@ export function useChatSession(): ChatSession {
     };
   }, [
     currentUserId,
+    announce,
     backfill,
     loadAttachments,
     loadConversations,

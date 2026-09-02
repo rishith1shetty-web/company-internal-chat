@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ChatHeader } from '@/components/chat/ChatHeader';
 import { ConnectionNotice } from '@/components/chat/ConnectionNotice';
@@ -15,6 +15,7 @@ import {
   RemoveMemberDialog,
   type PendingMemberRemoval,
 } from '@/components/chat/NewConversationDialogs';
+import { NotificationToasts } from '@/components/chat/NotificationToasts';
 import { Sidebar } from '@/components/chat/Sidebar';
 import { SettingsDialog } from '@/components/chat/SystemDialogs';
 import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen';
@@ -34,6 +35,7 @@ import {
   selectUsersById,
 } from '@/lib/chat/state';
 import { useChatSession } from '@/lib/chat/useChatSession';
+import { useNotifications } from '@/lib/notifications/useNotifications';
 import { cn } from '@/lib/ui/cn';
 import { useMediaQuery } from '@/lib/ui/useMediaQuery';
 
@@ -56,7 +58,21 @@ type DialogName = 'new-chat' | 'new-group' | 'add-members' | 'settings';
  * (docs/12-admin-device-identity.md).
  */
 export function ChatWorkspace() {
-  const session = useChatSession();
+  /*
+   * Notifications are wired before the session, because the session needs somewhere to hand each
+   * arriving message — and the notifier needs a way back to select a conversation when a toast or
+   * a desktop popup is clicked. That is a cycle, and the ref below is what breaks it: the notifier
+   * is given a stable function today, and the effect underneath fills in what it does once the
+   * session exists.
+   */
+  const openHandlerRef = useRef<(conversationId: string) => void>(() => {});
+  const openFromNotification = useCallback(
+    (conversationId: string) => openHandlerRef.current(conversationId),
+    [],
+  );
+
+  const notifications = useNotifications({ openConversation: openFromNotification });
+  const session = useChatSession({ onIncomingMessage: notifications.notify });
   const { state } = session;
 
   const [openDialog, setOpenDialog] = useState<DialogName | null>(null);
@@ -85,6 +101,21 @@ export function ChatWorkspace() {
   const directoryUsers = useMemo(() => selectDirectoryUsers(state), [state]);
   const selectedConversation = selectSelectedConversation(state);
   const currentUser = state.currentUser;
+
+  /*
+   * Clicking a notification opens its conversation — through the same call the sidebar makes.
+   *
+   * Deliberately not a second navigation path: whatever selecting a conversation does today
+   * (re-read its history, clear its unread badge, close the mobile sidebar) is what a notification
+   * click does too, and it stays that way without anybody remembering to keep two routes in step.
+   */
+  const selectConversationFromSession = session.selectConversation;
+  useEffect(() => {
+    openHandlerRef.current = (conversationId: string) => {
+      selectConversationFromSession(conversationId);
+      setSidebarOpen(false);
+    };
+  }, [selectConversationFromSession]);
 
   const closeDialog = useCallback(() => setOpenDialog(null), []);
 
@@ -350,10 +381,32 @@ export function ChatWorkspace() {
         onCancel={() => setPendingRemoval(null)}
         onConfirm={confirmRemoval}
       />
+      {/*
+        Fixed to the viewport, so it is rendered last and outside the layout rather than inside a
+        column that could clip or scroll it.
+      */}
+      <NotificationToasts
+        toasts={notifications.toasts}
+        onOpen={(conversationId) => {
+          selectConversation(conversationId);
+          notifications.dismissToast(
+            notifications.toasts.find((toast) => toast.conversationId === conversationId)?.key ??
+              '',
+          );
+        }}
+        onDismiss={notifications.dismissToast}
+      />
+
       <SettingsDialog
         open={openDialog === 'settings'}
         currentUser={currentUserSummary}
         deviceLabel={currentUser.deviceLabel}
+        preferences={notifications.preferences}
+        onPreferenceChange={notifications.setPreference}
+        desktopPermission={notifications.permission}
+        onEnableDesktop={notifications.enableDesktop}
+        soundBlocked={notifications.soundBlocked}
+        onTestSound={notifications.testSound}
         onClose={closeDialog}
       />
     </div>
