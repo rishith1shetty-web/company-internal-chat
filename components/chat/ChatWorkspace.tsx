@@ -35,11 +35,30 @@ import {
   selectUsersById,
 } from '@/lib/chat/state';
 import { useChatSession } from '@/lib/chat/useChatSession';
+import { desktopClientScope } from '@/lib/notifications/electron';
+import type { NotificationPreferences } from '@/lib/notifications/preferences';
 import { useNotifications } from '@/lib/notifications/useNotifications';
 import { cn } from '@/lib/ui/cn';
 import { useMediaQuery } from '@/lib/ui/useMediaQuery';
 
 type DialogName = 'new-chat' | 'new-group' | 'add-members' | 'settings';
+
+/**
+ * Starting preferences inside the Windows desktop client.
+ *
+ * The only difference from the browser's is `desktop`. It is off by default in a browser because
+ * turning it on means an operating-system permission prompt, and an unexplained prompt is one
+ * people refuse permanently. The desktop client has no prompt — the popup is drawn by the
+ * application's own process — so the caution has nothing left to protect against, and a chat
+ * client that sits silently in the tray is not doing the job it was installed for.
+ *
+ * It remains a default, not a setting: the employee's own choice is stored and wins over this.
+ */
+const DESKTOP_CLIENT_PREFERENCES: NotificationPreferences = {
+  sound: true,
+  inApp: true,
+  desktop: true,
+};
 
 /**
  * The application shell: header, conversation sidebar, chat panel and details panel, plus the
@@ -71,7 +90,24 @@ export function ChatWorkspace() {
     [],
   );
 
-  const notifications = useNotifications({ openConversation: openFromNotification });
+  /*
+   * Inside the Windows desktop client, notifications are drawn by the application's own process.
+   *
+   * Resolved once and passed straight down: `useNotifications` already accepts an injectable
+   * scope, so this is the entire integration — no branch in the policy, no flag through the
+   * centre, and no second code path to keep in step (lib/notifications/electron.ts). In an
+   * ordinary browser it is `undefined`, which means the browser's own `Notification` and leaves
+   * every existing behaviour exactly as it was.
+   *
+   * `useState` with a lazy initialiser because creating the scope subscribes to the desktop
+   * bridge, and doing that on every render would add a listener per render.
+   */
+  const [desktopScope] = useState(() => desktopClientScope());
+
+  const notifications = useNotifications({
+    openConversation: openFromNotification,
+    ...(desktopScope ? { desktopScope, defaults: DESKTOP_CLIENT_PREFERENCES } : {}),
+  });
   const session = useChatSession({ onIncomingMessage: notifications.notify });
   const { state } = session;
 
@@ -407,6 +443,7 @@ export function ChatWorkspace() {
         onEnableDesktop={notifications.enableDesktop}
         soundBlocked={notifications.soundBlocked}
         onTestSound={notifications.testSound}
+        surface={desktopScope ? 'desktop' : 'browser'}
         onClose={closeDialog}
       />
     </div>

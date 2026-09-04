@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rising Path Recruiters Chat</title>
+    <!--
+      The screen shown when the company server cannot be reached (§16).
+
+      IT IS A LOCAL FILE ON PURPOSE. Everything it needs — the mark, the type, the colours — is on
+      the employee's own disk, because the one moment it is displayed is the moment nothing can be
+      fetched. A single remote reference would leave a broken image in the middle of the apology.
+
+      WHAT IT DELIBERATELY DOES NOT SAY: no error code, no stack, no filesystem path, no
+      configuration value beyond the address the employee is trying to reach — which is a LAN
+      address already visible in the window, not a secret (CLAUDE.md §13). "Could not connect" and
+      "ask IT" is the whole useful content for the person sitting in front of it.
+
+      The colours are copied from app/globals.css rather than imported, because importing would
+      mean a network request. They are the same brand tokens.
+    -->
+    <style>
+      :root {
+        --canvas: #f6f2ec;
+        --surface: #ffffff;
+        --line: #e8dfd2;
+        --ink: #23180e;
+        --ink-muted: #5c4b3a;
+        --ink-subtle: #77634d;
+        --accent: #8a5220;
+        --accent-hover: #70411a;
+        --brand: #a8682b;
+        --gold: #f0a018;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 16px;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        line-height: 1.55;
+        /* Nothing on this page is selectable text anybody needs to copy, and a desktop window
+           that lets you drag-select its chrome feels like a web page rather than an application. */
+        user-select: none;
+        cursor: default;
+      }
+
+      .shell {
+        width: 100%;
+        max-width: 460px;
+        text-align: center;
+      }
+
+      .mark {
+        width: 96px;
+        height: 96px;
+        margin: 0 auto 22px;
+        display: block;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 10px 30px -12px rgba(35, 24, 14, 0.28);
+      }
+
+      /* The brand hairline used across the application's panels. */
+      .rule {
+        height: 4px;
+        background: linear-gradient(90deg, var(--brand), var(--gold), var(--brand));
+      }
+
+      .body {
+        padding: 30px 30px 32px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 19px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+
+      p {
+        margin: 0 0 14px;
+        color: var(--ink-muted);
+      }
+
+      p:last-of-type {
+        margin-bottom: 24px;
+      }
+
+      .address {
+        display: inline-block;
+        margin-bottom: 22px;
+        padding: 7px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbf8f3;
+        color: var(--ink-subtle);
+        font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+        font-size: 12px;
+        user-select: text;
+      }
+
+      button {
+        font: inherit;
+        font-weight: 600;
+        color: #ffffff;
+        background: var(--accent);
+        border: 0;
+        border-radius: 9px;
+        padding: 11px 26px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--accent-hover);
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--brand);
+        outline-offset: 2px;
+      }
+
+      button[disabled] {
+        opacity: 0.62;
+        cursor: default;
+      }
+
+      .footer {
+        margin-top: 20px;
+        color: var(--ink-subtle);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <img class="mark" src="assets/rising-path-mark.png" alt="Rising Path Recruiters" />
+
+      <div class="card">
+        <div class="rule"></div>
+        <div class="body">
+          <h1>Unable to connect to Company Chat</h1>
+          <p id="reason">The company chat server could not be reached.</p>
+          <p>
+            This usually means the computer is not on the company network, or the chat server is
+            temporarily unavailable. If it continues, please contact your IT administrator.
+          </p>
+
+          <div class="address" id="address" hidden></div>
+          <div>
+            <button id="retry" type="button">Try again</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">Rising Path Recruiters &middot; Internal Chat</div>
+    </div>
+
+    <script>
+      // The bridge is the preload's `risingPathDesktop` (desktop/preload.ts). Guarded, because
+      // this file must still render if it is ever opened without one.
+      (function () {
+        'use strict';
+
+        var bridge = window.risingPathDesktop;
+        var retry = document.getElementById('retry');
+        var reason = document.getElementById('reason');
+        var address = document.getElementById('address');
+
+        if (bridge && typeof bridge.connectionInfo === 'function') {
+          bridge
+            .connectionInfo()
+            .then(function (info) {
+              if (info && info.message) reason.textContent = info.message;
+              if (info && info.serverUrl) {
+                address.textContent = info.serverUrl;
+                address.hidden = false;
+              }
+            })
+            .catch(function () {
+              // The default wording above already says the useful thing.
+            });
+        }
+
+        retry.addEventListener('click', function () {
+          retry.disabled = true;
+          retry.textContent = 'Connecting…';
+
+          if (bridge && typeof bridge.reload === 'function') bridge.reload();
+
+          // If the load fails the main process draws this screen again, which resets the button.
+          // This only restores it when the attempt neither succeeded nor failed quickly.
+          window.setTimeout(function () {
+            retry.disabled = false;
+            retry.textContent = 'Try again';
+          }, 4000);
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -13,26 +13,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 import { parseDatabaseUrl } from '../lib/db/target';
 import { PrismaClient } from '../prisma/generated/client';
+import { TEST_PREFIXES } from './test-prefixes';
 
-/**
- * Every prefix used by anything that creates rows for verification.
- *
- * The list must stay complete. An audit that only knows some of the prefixes reports "none" while
- * rows are still there, which is worse than not auditing at all.
- */
-const TEST_PREFIXES = [
-  'zz-test-',
-  'zz-rt-',
-  'zz-test-p5-',
-  'zz-e2e-',
-  'zz-ui-',
-  // Phase 6: the group browser regression and the connection-pool measurement.
-  'zz-gui-',
-  'zz-pool-',
-  // Phase 7: the file browser regression and the large-file transfer check.
-  'zz-fui-',
-  'zz-big-',
-];
 
 async function main(): Promise<void> {
   try {
@@ -84,6 +66,21 @@ async function main(): Promise<void> {
       take: 50,
     });
 
+    /*
+     * The true totals, counted rather than inferred from the two lists above.
+     *
+     * Those lists are capped at 50 each so an audit cannot print thousands of lines. Reporting
+     * their combined length as the total would under-report exactly when there is most to report:
+     * a cleanup that failed and left hundreds of rows would calmly say "100 left behind".
+     */
+    const userTotal = await db.user.count({
+      where: { OR: TEST_PREFIXES.map((prefix) => ({ normalizedName: { startsWith: prefix } })) },
+    });
+    const deviceTotal = await db.device.count({
+      where: { OR: TEST_PREFIXES.map((prefix) => ({ label: { startsWith: prefix } })) },
+    });
+    const total = userTotal + deviceTotal;
+
     const leftovers = [
       ...users.map((user) => ({ id: user.id, name: user.displayName, createdAt: user.createdAt })),
       ...devices.map((device) => ({
@@ -95,16 +92,23 @@ async function main(): Promise<void> {
 
     process.stdout.write('\nTest rows still present\n');
 
-    if (leftovers.length === 0) {
+    if (total === 0) {
       process.stdout.write('  none\n\n');
     } else {
-      // Reported, never deleted: removing rows a script merely guessed were test data is exactly
-      // the kind of destructive action this project forbids.
+      // Reported, never deleted: this script guesses, and removing rows on a guess is exactly the
+      // destructive action the project forbids. Deletion belongs to scripts/db-cleanup-e2e.ts,
+      // which works from one harness's own prefix and refuses to touch a shared conversation.
       for (const row of leftovers) {
         process.stdout.write(`  ${row.id}  ${row.name}  ${row.createdAt.toISOString()}\n`);
       }
+
+      if (total > leftovers.length) {
+        process.stdout.write(`  ... and ${total - leftovers.length} more, not listed\n`);
+      }
+
       process.stdout.write(
-        `\n  ${leftovers.length} left behind. Remove them by id if they are not wanted.\n\n`,
+        `\n  ${total} left behind. Remove one harness's own rows with:\n` +
+          '    npx tsx scripts/db-cleanup-e2e.ts --prefix=<prefix>\n\n',
       );
       process.exitCode = 1;
     }

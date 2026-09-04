@@ -10,10 +10,14 @@
     "dev": "tsx watch --clear-screen=false --ignore \".next/**\" --ignore \"dist/**\" --ignore \"app/**\" --ignore \"components/**\" server.ts",
     "build": "prisma generate && next build && tsc -p tsconfig.server.json",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p desktop/tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "desktop:dev": "npm run desktop:build && electron dist-desktop/main.js",
+    "desktop:build": "tsc -p desktop/tsconfig.json && node scripts/desktop-assets.mjs",
+    "desktop:package": "npm run desktop:build && electron-builder --win --publish never",
+    "desktop:package:win": "npm run desktop:build && electron-builder --win nsis portable --publish never",
     "db:generate": "prisma generate",
     "db:check": "tsx scripts/db-check.ts",
     "db:audit": "tsx scripts/db-audit.ts",
@@ -36,6 +40,8 @@
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.3",
     "postcss": "^8.5.26",
@@ -44,5 +50,43 @@
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "vitest": "4.1.11"
+  },
+  "main": "dist-desktop/main.js",
+  "build": {
+    "appId": "com.risingpathrecruiters.chat",
+    "productName": "Rising Path Recruiters Chat",
+    "copyright": "Rising Path Recruiters",
+    "directories": {
+      "output": "release",
+      "buildResources": "desktop/assets"
+    },
+    "files": [
+      "dist-desktop/**/*",
+      "!node_modules/**/*",
+      "!**/*.map"
+    ],
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "desktop/assets/icon.ico",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Rising Path Recruiters Chat",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Rising Path Recruiters Chat Setup ${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Rising Path Recruiters Chat ${version} Portable.${ext}"
+    }
   }
 }

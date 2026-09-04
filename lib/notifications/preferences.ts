@@ -13,9 +13,11 @@
  * exception here would take down the chat interface over a mute switch.
  *
  * DEFAULTS. Sound and in-app toasts start on, because an internal chat application that says
- * nothing when a message arrives is not doing its job. Desktop notifications start OFF and stay
- * off until somebody presses the button in Settings: the browser permission prompt is an
- * interruption, and one that appears unbidden on first load is the kind users dismiss forever.
+ * nothing when a message arrives is not doing its job. Desktop notifications start OFF in a
+ * browser and stay off until somebody presses the button in Settings: the browser permission
+ * prompt is an interruption, and one that appears unbidden on first load is the kind users
+ * dismiss forever. The Windows desktop client overrides that one default — see the `defaults`
+ * parameter of `loadPreferences` for why the reason behind it does not apply there.
  */
 
 /** What the employee can turn on and off. Booleans only — nothing here identifies anybody. */
@@ -68,30 +70,44 @@ function defaultStore(): PreferenceStore | null {
  * have edited by hand, and `{"sound": "yes"}` must not produce a preference that is neither true
  * nor false.
  */
-export function loadPreferences(store: PreferenceStore | null = defaultStore()): NotificationPreferences {
-  if (!store) return { ...DEFAULT_PREFERENCES };
+export function loadPreferences(
+  store: PreferenceStore | null = defaultStore(),
+  /*
+   * What to use for anything not stored yet.
+   *
+   * The desktop client passes `{ desktop: true }`. The reason `desktop` defaults to false in a
+   * browser is the permission prompt — an interruption worth earning before asking for. Inside
+   * the desktop client there is no prompt at all: the popup is drawn by the application's own
+   * process (lib/notifications/electron.ts), so the reason for the conservative default does not
+   * apply, and an employee who installed a chat application expects it to tell them about
+   * messages while it sits in the tray. A stored choice still wins over this, so an employee who
+   * turns it off stays turned off.
+   */
+  defaults: NotificationPreferences = DEFAULT_PREFERENCES,
+): NotificationPreferences {
+  if (!store) return { ...defaults };
 
   let raw: string | null;
   try {
     raw = store.getItem(PREFERENCES_KEY);
   } catch {
-    return { ...DEFAULT_PREFERENCES };
+    return { ...defaults };
   }
 
-  if (raw === null) return { ...DEFAULT_PREFERENCES };
+  if (raw === null) return { ...defaults };
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { ...DEFAULT_PREFERENCES };
+    return { ...defaults };
   }
 
-  if (typeof parsed !== 'object' || parsed === null) return { ...DEFAULT_PREFERENCES };
+  if (typeof parsed !== 'object' || parsed === null) return { ...defaults };
 
   const source = parsed as Record<string, unknown>;
   const read = (key: keyof NotificationPreferences): boolean =>
-    typeof source[key] === 'boolean' ? (source[key] as boolean) : DEFAULT_PREFERENCES[key];
+    typeof source[key] === 'boolean' ? (source[key] as boolean) : defaults[key];
 
   return { sound: read('sound'), inApp: read('inApp'), desktop: read('desktop') };
 }

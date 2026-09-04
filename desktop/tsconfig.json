@@ -1,0 +1,34 @@
+{
+  // Build config for the Windows desktop client.
+  //
+  // SEPARATE FROM THE APPLICATION'S CONFIG ON PURPOSE (§29). The main process is Node with
+  // Electron's APIs and no DOM; the Next.js application is a browser with no filesystem. Sharing
+  // one config would put `window` in scope for main.ts and `require`/`__dirname` in scope for
+  // React components, and each of those is a mistake that would then compile.
+  //
+  // The exception is the preload, which straddles both — it runs in a renderer but with Node
+  // available. It uses only `contextBridge` and `ipcRenderer`, both of which are Electron types,
+  // so it needs nothing from the DOM library either.
+  //
+  // module/moduleResolution are node16 to match tsconfig.server.json: package.json declares no
+  // "type", so node16 emits CommonJS, which is what Electron's main process loads.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "isolatedModules": false,
+    "outDir": "../dist-desktop",
+    "rootDir": ".",
+    // No "dom": the main process has no window, no document and no fetch-shaped globals, and
+    // code written as though it did would fail only at run time.
+    "lib": ["ES2022"],
+    "types": ["node"],
+    // The application's `@/*` paths resolve from the repository root and mean nothing here; the
+    // desktop client imports only its own modules and Electron.
+    "paths": {}
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["assets"]
+}

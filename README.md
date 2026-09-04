@@ -27,7 +27,8 @@ company fails even with a valid cookie. Production refuses to start without a po
 ## Scope of version 1
 
 One-to-one chat · group chat · real-time messaging · file upload and download ·
-online/offline presence · message notifications (sound, in-app toast and a desktop popup while the tab is in the background) · company-network-restricted access.
+online/offline presence · message notifications (sound, in-app toast and a desktop popup while the tab is in the background) · company-network-restricted access ·
+**a Windows desktop client**, so an employee uses one application rather than one browser profile.
 
 No passwords in v1, by design, with the identity layer built so that real company authentication
 can replace it without redesign. **Identity is assigned by an administrator to a company computer**
@@ -86,6 +87,7 @@ afterwards.
 | [docs/11-phase-5-direct-chat.md](docs/11-phase-5-direct-chat.md) | **One-to-one chat: REST endpoints, directory, conversation resolution, history pagination, unread counts, reconnection, tests** |
 | [docs/12-admin-device-identity.md](docs/12-admin-device-identity.md) | **Admin-assigned identity: the device registry, setup codes, assignment and reassignment flows, admin access and its limits** |
 | [docs/17-notifications.md](docs/17-notifications.md) | **Message notifications: sound, in-app toast, desktop popup, when each is used, and where the preferences live** |
+| [docs/18-desktop-client.md](docs/18-desktop-client.md) | **The Windows desktop client: why it loads the server's own page, the one persistent profile per computer, Electron security settings, navigation rules, native notifications, tray and single instance, the installer** |
 | [docs/13-phase-6-group-chat.md](docs/13-phase-6-group-chat.md) | **Group chat: creation, membership, roles, the join-bounded history window and where its timestamp comes from, real-time membership changes, tests** |
 | [docs/14-phase-7-file-transfer.md](docs/14-phase-7-file-transfer.md) | **File transfer: streaming upload, storage design, download authorization, why there is no type allowlist, failure and rollback behaviour, production storage setup, tests** |
 | [docs/15-brand-refresh.md](docs/15-brand-refresh.md) | Brand and interface refresh: the palette derived from the company logo, measured contrast, where the logo is used, design tokens |
@@ -169,11 +171,15 @@ proxy they came from. See
 | `npm run dev` | Development server on http://localhost:3000 |
 | `npm run build` | Build the Next.js app **and** compile `server.ts` to `dist/` |
 | `npm start` | Run the production server (`node dist/server.js`); build first |
-| `npm run typecheck` | TypeScript checks (app + server) |
+| `npm run typecheck` | TypeScript checks (app + server + desktop client) |
 | `npm run lint` | ESLint |
 | `npm test` | Vitest (database tests skip when no `DATABASE_URL` is set) |
+| `npm run desktop:dev` | Build and launch the Windows desktop client against a running server |
+| `npm run desktop:build` | Compile `desktop/` to `dist-desktop/` and generate the icons |
+| `npm run desktop:package:win` | Build the Windows installer and portable EXE into `release/` |
 | `npm run db:check` | **Read-only.** Print the redacted database target, confirm it is `company_chat_db`, report role privileges and which tables exist |
 | `npm run db:audit` | **Read-only.** Print row counts per table and list any leftover test rows, so a test run can be shown to have cleaned up after itself |
+| `npx tsx scripts/db-cleanup-e2e.ts --prefix=<prefix>` | Remove one automated harness's own fixtures. Refuses any prefix that is not a known verification prefix, and refuses to touch a conversation containing anyone who is not a test user. `--dry-run` shows what would go |
 | `npm run db:generate` | Regenerate the Prisma client (also runs on install and build) |
 | `npm run db:status` | Show which migrations have been applied |
 | `npm run db:migrate` | Apply pending migrations (`prisma migrate deploy`) — forward only |

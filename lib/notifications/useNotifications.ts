@@ -38,10 +38,19 @@ export type { ToastItem } from './center';
 export interface UseNotificationsOptions {
   /** Called when a toast or a desktop notification is clicked. */
   openConversation: (conversationId: string) => void;
+  /**
+   * Where desktop notifications are shown.
+   *
+   * Omitted in a browser, which means the browser's own `Notification`. The Windows desktop
+   * client supplies one backed by its main process instead (lib/notifications/electron.ts),
+   * because only that side can restore a window the employee has hidden to the tray.
+   */
+  desktopScope?: DesktopScope;
+  /** Starting values for anything the employee has not chosen yet. */
+  defaults?: NotificationPreferences;
   /** Test seams. The application supplies none of these. */
   chime?: Chime | ChimeOptions;
   store?: PreferenceStore | null;
-  desktopScope?: DesktopScope;
   isAppFocused?: () => boolean;
 }
 
@@ -79,7 +88,7 @@ function documentIsFocused(): boolean {
 const NO_TOASTS: readonly ToastItem[] = [];
 
 export function useNotifications(options: UseNotificationsOptions): NotificationsApi {
-  const { openConversation, store, desktopScope, isAppFocused = documentIsFocused } = options;
+  const { openConversation, store, desktopScope, defaults, isAppFocused = documentIsFocused } = options;
 
   /*
    * Read once, during the first render, rather than assigned from an effect afterwards.
@@ -90,7 +99,7 @@ export function useNotifications(options: UseNotificationsOptions): Notification
    * cost an extra render on every mount to arrive at the same place.
    */
   const [preferences, setPreferences] = useState<NotificationPreferences>(() =>
-    loadPreferences(store === undefined ? undefined : store),
+    loadPreferences(store === undefined ? undefined : store, defaults),
   );
   const [permission, setPermission] = useState<DesktopPermission>(() =>
     desktopPermission(desktopScope),

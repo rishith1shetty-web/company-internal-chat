@@ -7,6 +7,12 @@ const config = [
     ignores: [
       '.next/**',
       'dist/**',
+      // Compiled output of desktop/tsconfig.json, plus the installers electron-builder writes.
+      // Emitted CommonJS, not hand-written source.
+      'dist-desktop/**',
+      'release/**',
+      // Icons generated from the brand mark by scripts/desktop-assets.mjs.
+      'desktop/assets/**',
       'node_modules/**',
       'next-env.d.ts',
       '.claude/**',

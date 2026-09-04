@@ -40,6 +40,12 @@
   "exclude": [
     "node_modules",
     "dist",
-    ".next"
+    ".next",
+    "dist-desktop",
+    // The Electron main and preload processes. They are Node with Electron's APIs and no DOM,
+    // and they are compiled and type-checked by desktop/tsconfig.json instead — so that Node
+    // globals do not leak into the browser code this config governs (§29). The desktop client's
+    // pure modules are still checked here when a test imports one, which is what the tests do.
+    "desktop"
   ]
 }

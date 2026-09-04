@@ -10,6 +10,15 @@
 # Custom server build output (tsc -p tsconfig.server.json)
 /dist
 
+# Desktop client build output (tsc -p desktop/tsconfig.json) and its installers.
+/dist-desktop
+/release
+
+# Desktop build assets. Generated from public/brand/rising-path-mark.png by
+# scripts/desktop-assets.mjs, so they are build output rather than source — the logo itself is
+# tracked, its derived icon sizes are not.
+/desktop/assets
+
 # Generated Prisma client. Reproduced by `prisma generate` (which `npm run build` and
 # `postinstall` both run), so it is a build artifact rather than source.
 /prisma/generated

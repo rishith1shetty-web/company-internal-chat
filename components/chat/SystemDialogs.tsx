@@ -8,6 +8,9 @@ import type { DesktopPermission } from '@/lib/notifications/desktop';
 import type { NotificationPreferences } from '@/lib/notifications/preferences';
 import { cn } from '@/lib/ui/cn';
 
+/** Which shell this interface is being shown in. Affects wording only, never behaviour. */
+export type NotificationSurface = 'browser' | 'desktop';
+
 /**
  * Settings.
  *
@@ -19,6 +22,11 @@ import { cn } from '@/lib/ui/cn';
  * The notification half is the part an employee owns. It is stored in this browser and nowhere
  * else (lib/notifications/preferences.ts): it decides whether *this* browser makes a noise, which
  * is not company data and not something an administrator has any business setting.
+ *
+ * `surface` changes wording and nothing else. The same interface is served to a browser tab and
+ * to the Windows desktop client, and "allow notifications for this site in your browser's site
+ * settings" is advice nobody can act on inside an application that has no site settings — so the
+ * handful of sentences that name a browser name the app instead (docs/18-desktop-client.md).
  */
 export function SettingsDialog({
   open,
@@ -30,6 +38,7 @@ export function SettingsDialog({
   onEnableDesktop,
   soundBlocked,
   onTestSound,
+  surface = 'browser',
   onClose,
 }: {
   open: boolean;
@@ -41,6 +50,8 @@ export function SettingsDialog({
   onEnableDesktop: () => Promise<DesktopPermission>;
   soundBlocked: boolean;
   onTestSound: () => void;
+  /** Where this interface is being shown. Wording only. */
+  surface?: NotificationSurface;
   onClose: () => void;
 }) {
   return (
@@ -59,7 +70,9 @@ export function SettingsDialog({
           Notifications
         </h3>
         <p className="mt-1 text-sm text-ink-muted">
-          These apply to this browser only, on this computer.
+          {surface === 'desktop'
+            ? 'These apply to this computer.'
+            : 'These apply to this browser only, on this computer.'}
         </p>
 
         <div className="mt-3 divide-y divide-line overflow-hidden rounded-card border border-line">
@@ -67,7 +80,9 @@ export function SettingsDialog({
             label="Message sounds"
             description={
               soundBlocked
-                ? 'Your browser is waiting for you to click the page once before it will play sounds.'
+                ? surface === 'desktop'
+                  ? 'Click anywhere in the window once, and sounds will play from then on.'
+                  : 'Your browser is waiting for you to click the page once before it will play sounds.'
                 : 'A short chime when a message arrives.'
             }
             checked={preferences.sound}
@@ -93,6 +108,7 @@ export function SettingsDialog({
           />
 
           <DesktopRow
+            surface={surface}
             permission={desktopPermission}
             enabled={preferences.desktop}
             onEnable={onEnableDesktop}
@@ -101,8 +117,9 @@ export function SettingsDialog({
         </div>
 
         <p className="mt-2.5 text-xs text-ink-subtle">
-          Sounds and in-app cards keep working while this tab is in the background. Desktop
-          notifications are what you see when you are in another application.
+          {surface === 'desktop'
+            ? 'Sounds keep working while the app is minimised or waiting in the tray. Desktop notifications are what you see when the window is not in front of you.'
+            : 'Sounds and in-app cards keep working while this tab is in the background. Desktop notifications are what you see when you are in another application.'}
         </p>
       </section>
 
@@ -143,23 +160,35 @@ export function SettingsDialog({
  *   default      never asked — the button is the ONLY place permission is ever requested
  *   granted      a real switch, which the employee can still turn off without revoking anything
  *   denied       the browser has been told no, and only the browser can undo that
+ *
+ * In the Windows desktop client only the third of those is reachable: the popup is drawn by the
+ * application's own process, so no operating-system permission stands in the way and there is
+ * nothing to prompt for (lib/notifications/electron.ts). The other three remain because this same
+ * component serves browser users, where all four genuinely occur.
  */
 function DesktopRow({
+  surface,
   permission,
   enabled,
   onEnable,
   onChange,
 }: {
+  surface: NotificationSurface;
   permission: DesktopPermission;
   enabled: boolean;
   onEnable: () => Promise<DesktopPermission>;
   onChange: (value: boolean) => void;
 }) {
+  const purpose =
+    surface === 'desktop'
+      ? 'A Windows notification when the app is minimised, or you are working in something else.'
+      : 'Pop up outside the browser when you are working in another application.';
+
   if (permission === 'granted') {
     return (
       <ToggleRow
         label="Desktop notifications"
-        description="Pop up outside the browser when you are working in another application."
+        description={purpose}
         checked={enabled}
         onChange={onChange}
       />
@@ -171,7 +200,7 @@ function DesktopRow({
       ? 'This browser does not support desktop notifications. Sounds and in-app cards still work.'
       : permission === 'denied'
         ? 'Blocked in your browser. To turn these on, allow notifications for this site in your browser’s site settings.'
-        : 'Pop up outside the browser when you are working in another application.';
+        : purpose;
 
   return (
     <div className="flex items-start justify-between gap-4 bg-surface px-3.5 py-3">
