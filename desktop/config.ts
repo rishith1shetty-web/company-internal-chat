@@ -142,6 +142,41 @@ export function resolveServerUrl(sources: ServerUrlSources = {}): ResolvedServer
 }
 
 /**
+ * The device cookie's name, as `lib/auth/session.ts` defines it.
+ *
+ * DUPLICATED, AND CHECKED. The desktop client compiles with its own rootDir and Node/Electron
+ * types, so it cannot import from `lib/` without dragging the application's types — and Prisma's —
+ * into the main process. So the name is written out, and `tests/desktop/first-run.test.ts` asserts
+ * at run time that it still equals `DEVICE_COOKIE`. If somebody renames the cookie, that test
+ * fails rather than the desktop client quietly sending every enrolled computer back to setup.
+ */
+export const DEVICE_COOKIE_NAME = 'cic_device';
+
+/** Where the window should open. */
+export type StartPath = '/' | '/setup';
+
+/**
+ * Decides which page the desktop client opens on.
+ *
+ * THE DISTINCTION THIS MAKES is between a computer that has never been enrolled and one whose
+ * enrollment has stopped working, and it matters because the right screen differs:
+ *
+ *   no device cookie      Nobody has ever set this machine up. An administrator is almost
+ *                         certainly standing at it with a one-time code — and in a window with no
+ *                         address bar, `/setup` is somewhere they cannot otherwise reach. Open it.
+ *
+ *   a device cookie       This machine WAS set up. If it no longer resolves to an employee, it was
+ *                         retired or reassigned, and the honest screen is the existing "ask your
+ *                         IT administrator" one — not a code form the employee cannot fill.
+ *
+ * The cookie is the only signal used, deliberately: it is already in the profile, so this decision
+ * needs no request and is made before the server has answered anything.
+ */
+export function startPathFor(hasDeviceCookie: boolean): StartPath {
+  return hasDeviceCookie ? '/' : '/setup';
+}
+
+/**
  * Reads `serverUrl` out of the parsed contents of server.json.
  *
  * Deliberately tolerant of a missing or malformed file — an absent file is the normal state on a

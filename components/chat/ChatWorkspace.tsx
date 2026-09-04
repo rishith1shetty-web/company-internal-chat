@@ -188,10 +188,16 @@ export function ChatWorkspace() {
     );
   }
 
-  // No assigned identity: an explanation, not a form. Nothing on that screen is actionable,
-  // because nothing an employee can do would change it.
+  /*
+   * No assigned identity: an explanation, not a form. Nothing on that screen is actionable for an
+   * employee, because nothing an employee could do would change it.
+   *
+   * The one thing it does carry, and only inside the desktop client, is the route to `/setup` —
+   * which has no address bar to be typed into. It leads to the same code-gated IT screen and
+   * confers nothing without a code (docs/12-admin-device-identity.md).
+   */
   if (state.screen === 'unassigned' || !currentUser) {
-    return <UnassignedDeviceScreen error={state.notice} />;
+    return <UnassignedDeviceScreen error={state.notice} showSetupLink={Boolean(desktopScope)} />;
   }
 
   const selectConversation = (conversationId: string) => {

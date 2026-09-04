@@ -51,10 +51,12 @@ import {
 
 import {
   DEFAULT_SERVER_URL,
+  DEVICE_COOKIE_NAME,
   SERVER_CONFIG_FILENAME,
   ServerUrlError,
   readServerUrlFromConfig,
   resolveServerUrl,
+  startPathFor,
   type ResolvedServerUrl,
 } from './config';
 import { safeDownloadName } from './downloads';
@@ -386,6 +388,39 @@ function openExternally(target: string): void {
 }
 
 /** Loads the company server. The one place the window is pointed anywhere. */
+/**
+ * Is this profile holding a device cookie — i.e. has this computer ever been enrolled?
+ *
+ * Read from the persistent partition rather than asked of the server, so the answer is available
+ * before the network is, and a slow or unreachable server cannot turn an enrolled machine into an
+ * unenrolled-looking one.
+ */
+async function hasDeviceCookie(origin: string): Promise<boolean> {
+  try {
+    const cookies = await session
+      .fromPartition(PARTITION)
+      .cookies.get({ url: origin, name: DEVICE_COOKIE_NAME });
+    return cookies.length > 0;
+  } catch {
+    // Unreadable cookie store: assume enrolled, so a transient failure sends nobody to a setup
+    // screen they do not need. A genuinely unenrolled machine still shows the "not set up yet"
+    // screen, which now carries the button that gets an administrator to setup by hand.
+    return true;
+  }
+}
+
+/**
+ * Loads the company server, opening on setup when this computer has never been enrolled.
+ *
+ * WHY THE DECISION IS HERE and not in the web application: `/setup` is deliberately unreachable
+ * from the employee interface (docs/12-admin-device-identity.md — nothing links to it, so that a
+ * setup mechanism does not become something employees ask each other for). In a browser that is
+ * right and stays right; an administrator simply types the URL. The desktop client has no address
+ * bar, so without this there is no route to enrollment at all — which is the bug this fixes.
+ *
+ * Deciding it in the main process keeps the browser's behaviour exactly as designed: the web
+ * application is unchanged and still links nowhere near setup.
+ */
 function loadServer(): void {
   if (!mainWindow) return;
 
@@ -394,9 +429,21 @@ function loadServer(): void {
     return;
   }
 
-  void mainWindow.loadURL(server.url).catch(() => {
-    // `did-fail-load` has already drawn the screen; this only stops an unhandled rejection.
-  });
+  const target = server;
+
+  void (async () => {
+    const path = startPathFor(await hasDeviceCookie(target.origin));
+
+    if (path === '/setup') {
+      console.log('[desktop] This computer is not enrolled yet; opening setup.');
+    }
+
+    // `mainWindow` is re-read after the await: the window can be gone by the time this resolves.
+    await mainWindow?.loadURL(`${target.url}${path === '/' ? '' : path}`).catch(() => {
+      // `did-fail-load` has already drawn the offline screen; this only stops an unhandled
+      // rejection reaching the process.
+    });
+  })();
 }
 
 function returnToChat(): void {

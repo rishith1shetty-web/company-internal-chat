@@ -6,6 +6,14 @@ import { ChatIcon, LockIcon } from '@/components/ui/icons';
 interface UnassignedDeviceScreenProps {
   /** A server failure, when the reason is something other than "not assigned yet". */
   error: string | null;
+  /**
+   * Offer a way to reach `/setup`.
+   *
+   * True ONLY inside the Windows desktop client. In a browser this stays false and the screen is
+   * exactly what it always was — see the note below for why that difference is deliberate rather
+   * than an inconsistency.
+   */
+  showSetupLink?: boolean;
 }
 
 /**
@@ -24,8 +32,17 @@ interface UnassignedDeviceScreenProps {
  * The setup code is deliberately not mentioned. Enrollment is an IT operation, and putting the
  * word in front of every employee would turn a setup mechanism into something people ask each
  * other for.
+ *
+ * THE ONE EXCEPTION, AND WHY IT IS NOT A CONTRADICTION. Inside the Windows desktop client there is
+ * no address bar, so an administrator standing at a new machine has no way whatsoever to reach
+ * `/setup` — the rule above stopped being "don't advertise it" and became "nobody can get there",
+ * which is a bug rather than a policy. `showSetupLink` restores the route in that one shell only.
+ *
+ * It still gives the person at the keyboard no identity and no choice: the link opens the same
+ * code-gated IT screen, and without a one-time code from an administrator it does nothing at all.
+ * In a browser the prop is false and this screen is unchanged.
  */
-export function UnassignedDeviceScreen({ error }: UnassignedDeviceScreenProps) {
+export function UnassignedDeviceScreen({ error, showSetupLink = false }: UnassignedDeviceScreenProps) {
   return (
     <main className="chat-canvas flex min-h-dvh items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
@@ -63,6 +80,20 @@ export function UnassignedDeviceScreen({ error }: UnassignedDeviceScreenProps) {
               >
                 {error}
               </p>
+            ) : null}
+
+            {/*
+              A plain anchor, not a router push: this is the desktop client's route back to an
+              IT screen, and a full load is the more robust of the two when the reason we are
+              here at all may be that the session underneath the app has just gone away.
+            */}
+            {showSetupLink ? (
+              <a
+                href="/setup"
+                className="mt-5 inline-flex items-center justify-center rounded-control bg-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              >
+                Set up this computer
+              </a>
             ) : null}
 
             <p className="mt-6 flex items-start gap-2.5 border-t border-line pt-4 text-xs text-ink-subtle">

@@ -74,7 +74,7 @@ desktop/
 ```
 
 The four pure modules are where the rules live, which is why they are testable without an Electron
-process at all ([tests/desktop/](../tests/desktop/), 71 tests).
+process at all ([tests/desktop/](../tests/desktop/), 76 tests across 5 files).
 
 ## 5. Where the server address is configured
 
@@ -128,11 +128,47 @@ or upgrading finds the same enrollment.
 1. Administrator opens `/admin` **in a normal browser** on the server/admin PC.
 2. Registers the computer and the employee; receives the existing one-time setup code.
 3. Goes to the employee PC and launches **Rising Path Recruiters Chat**.
-4. The client shows the existing "this computer is not set up yet" screen — no field, no way for
-   the employee to name themselves.
-5. Administrator opens `/setup`, enters the code.
+4. **The client opens straight on `/setup`**, because this profile holds no device cookie.
+5. Administrator enters the code and presses **Set up this computer**.
 6. The existing server enrollment creates the Device and sets the two cookies.
-7. Chat opens as the assigned employee.
+7. **Open chat** — and from then on every launch goes straight to `/`.
+
+### Why the client has to decide this, and why the main process decides it
+
+`/setup` is deliberately unreachable from the employee interface: nothing links to it, so that a
+setup mechanism does not become something employees ask each other for
+([docs/12](./12-admin-device-identity.md)). In a browser that is right and stays right — an
+administrator simply types the URL.
+
+**In a window with no address bar it stopped being "don't advertise it" and became "nobody can get
+there".** A freshly registered computer showed "this computer is not set up yet" and offered no way
+to set it up. That was a dead end, and it is the bug this section exists to record.
+
+The decision is made in the **main process**, from one signal:
+
+| This profile | Opens on | Because |
+|---|---|---|
+| has never held a device cookie | `/setup` | Nobody has set this machine up. An administrator is standing at it with a one-time code. |
+| holds a device cookie | `/` | It **was** set up. If it no longer resolves to anybody it was retired or reassigned, and the honest screen is "ask your IT administrator" — not a code form the employee has no code for. |
+
+That distinction is the reason the signal is the cookie's *presence* rather than "does the server
+currently know who I am". The two answers differ in exactly the case that matters. Reading the
+cookie also needs no request, so the choice is made before the server has answered anything and a
+slow network cannot make an enrolled machine look unenrolled.
+
+Deciding it here leaves the web application **completely unchanged** on this point: it still links
+nowhere near setup, and a browser behaves exactly as it did.
+
+### The one screen that changed
+
+The "not set up yet" screen gains a **Set up this computer** link — in the desktop client only,
+`showSetupLink={Boolean(desktopScope)}`. It covers the case the cookie rule deliberately routes to
+`/`: a computer that was enrolled, was then retired or reassigned, and now needs an administrator
+who again has no address bar to type into.
+
+It confers nothing. It opens the same code-gated IT screen, and without a one-time code from an
+administrator it does nothing at all. In a browser the prop is false and the screen is untouched —
+asserted by the browser regression, not merely intended.
 
 From then on the employee never sees setup again: closing, reopening, and restarting Windows all
 restore the same identity. **No new identity mechanism was invented** — this is the existing
