@@ -15,8 +15,11 @@
  * typing the administrator's token into an employee's browser, which is a far worse exposure than
  * a single-use value that grants one device cookie and nothing else.
  *
- * NOT HARDENED YET: there is no rate limiting in front of this endpoint. A ~98-bit code is not
- * guessable, but the throttling belongs here in Phase 9 (docs/12-admin-device-identity.md).
+ * RATE LIMITED (Phase 9). Attempts are capped per client address in `server.ts`, which is the
+ * only layer that can see the peer address — a route handler receives a `Request`, which has
+ * headers but no socket, so anything counted in here would be counted per header value the caller
+ * chose. A ~98-bit code was never realistically guessable; the limit is what stops the endpoint
+ * being hammered and what puts a sustained attempt in the log.
  */
 
 import { NextResponse } from 'next/server';

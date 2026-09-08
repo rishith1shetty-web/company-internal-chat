@@ -10,7 +10,8 @@
  *
  *   - It is not per-administrator authentication. Everyone who holds the token is the same
  *     "admin", so an action cannot be attributed to a person.
- *   - There is no rate limiting or lockout in front of it. That is Phase 9.
+ *   - Sign-in attempts ARE now rate limited per client address, in `server.ts` (Phase 9). There is
+ *     still no per-administrator lockout, because there is still only one administrator secret.
  *   - It does not restrict *where* the admin surface can be reached from. Confining `/admin` and
  *     `/api/admin` to an operator network is a reverse-proxy and firewall job, and is Phase 8.
  *

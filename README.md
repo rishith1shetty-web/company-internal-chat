@@ -92,6 +92,7 @@ afterwards.
 | [docs/14-phase-7-file-transfer.md](docs/14-phase-7-file-transfer.md) | **File transfer: streaming upload, storage design, download authorization, why there is no type allowlist, failure and rollback behaviour, production storage setup, tests** |
 | [docs/15-brand-refresh.md](docs/15-brand-refresh.md) | Brand and interface refresh: the palette derived from the company logo, measured contrast, where the logo is used, design tokens |
 | [docs/16-phase-8-network-restriction.md](docs/16-phase-8-network-restriction.md) | **Company-network restriction: the two enforcement points and why both are needed, CIDR configuration, client-IP resolution and proxy trust, fail-closed production behaviour, binding, tests** |
+| [docs/19-phase-9-security-hardening.md](docs/19-phase-9-security-hardening.md) | **Security hardening: the threat model, rate limiting, request-body limits, cross-site write refusal, security headers and what the CSP does and does not cover, residual V1 risks, the HTTPS requirement, backup expectations, Phase 10 prerequisites** |
 
 ## Stack
 

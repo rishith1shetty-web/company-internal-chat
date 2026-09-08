@@ -591,9 +591,24 @@ export async function enrollDevice(
   const userAgent = truncateUserAgent(input.userAgent);
   const now = new Date();
 
-  await db.$transaction(async (tx: Prisma.TransactionClient) => {
-    await tx.device.update({
-      where: { id: device.id },
+  const redeemed = await db.$transaction(async (tx: Prisma.TransactionClient) => {
+    /*
+     * THE CODE IS CLAIMED HERE, AND THE `where` CLAUSE IS WHAT MAKES IT SINGLE-USE (Phase 9).
+     *
+     * The lookup above found the device, but between that read and this write the code may
+     * already have been spent by another request — two people typing the same code at once, or
+     * the same request retried. `updateMany` with `enrollmentTokenHash: codeHash` in the
+     * condition turns the claim into one atomic statement: PostgreSQL locks the row, and the
+     * second transaction re-evaluates the condition after the first commits, finds the column
+     * already NULL, and matches nothing.
+     *
+     * Written as a conditional update rather than `update({ where: { id } })` for exactly that
+     * reason. The unconditional form would let both requests write, and the pair would resolve to
+     * whichever committed last — with the loser holding a device cookie that had already stopped
+     * working and no way to tell why.
+     */
+    const claimed = await tx.device.updateMany({
+      where: { id: device.id, enrollmentTokenHash: codeHash },
       data: {
         tokenHash: hashToken(deviceToken),
         // Cleared in the same statement that redeems it, inside the same transaction that issues
@@ -607,6 +622,9 @@ export async function enrollDevice(
       },
     });
 
+    // Somebody else redeemed it first. Nothing else in this transaction runs.
+    if (claimed.count !== 1) return false;
+
     // Anything left over from a previous enrollment of this machine.
     await tx.session.deleteMany({ where: { deviceId: device.id } });
 
@@ -619,7 +637,15 @@ export async function enrollDevice(
         userAgent,
       },
     });
+
+    return true;
   });
+
+  // Refused with the same message as a made-up code: that a code was real a moment ago is not
+  // something this endpoint should confirm.
+  if (!redeemed) {
+    throw new DeviceError('INVALID_CODE', 'That setup code is not valid.');
+  }
 
   return {
     deviceId: device.id,

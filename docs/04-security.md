@@ -70,8 +70,11 @@ Every server-side check exists because of that row.
 - Cookie flags `HttpOnly` (no JavaScript access, so XSS cannot exfiltrate it), `Secure` in
   production, `SameSite=Lax` (`Strict` for the administrator cookie), `Path=/`, explicit expiry.
 - Server-side expiry checked on every use; expired rows swept.
-- Rate limiting on `POST /api/admin/session` and `POST /api/enroll` is **Phase 9** and is not in
-  place yet.
+- Rate limiting on `POST /api/admin/session` and `POST /api/enroll` is **in place** (Phase 9):
+  10 and 20 attempts per 15 minutes per client address, each followed by a 15-minute penalty,
+  enforced in `server.ts` because it is the only layer that can see the peer address. The
+  signed-in probe `GET /api/admin/session` is deliberately not counted
+  ([19-phase-9-security-hardening.md](19-phase-9-security-hardening.md) §2.1).
 - No identity value is ever accepted from the request body or a socket payload.
 
 ### Authorization (N-04)
@@ -102,12 +105,18 @@ Every server-side check exists because of that row.
   stripped of CR/LF.
 
 ### CSRF
-Cookie-based identity means state-changing requests need CSRF protection (`CLAUDE.md` §5 Phase 9).
-Layered:
+Cookie-based identity means state-changing requests need CSRF protection. Layered, and implemented
+in Phase 9:
 - `SameSite=Lax` blocks cross-site form posts and top-level cross-site POSTs.
-- State-changing endpoints additionally verify the `Origin` header against `APP_URL` and reject
-  mismatches — this also covers the Socket.IO handshake, which `SameSite` alone does not fully
-  protect for WebSockets.
+- Every unsafe-method request (`POST`/`PUT`/`PATCH`/`DELETE`) whose `Origin` header names another
+  host is refused with 403 in `server.ts`, before Next.js sees it. Compared against the request's
+  own `Host` rather than against `APP_URL`: the two are equivalent when the configuration is
+  right, and the `Host` comparison cannot be *wrong* — a mistyped `APP_URL` would otherwise lock
+  every employee out of every write. A request carrying no `Origin` at all is allowed, because
+  browsers attach one to exactly the cross-site requests this catches.
+- The Socket.IO handshake is **not** covered by that check — engine.io intercepts those requests
+  before the listener in `server.ts` runs. It is covered instead by `cors: { origin: false }` on
+  the Socket.IO server, so a cross-origin browser cannot open the socket at all.
 - No state-changing operation is ever exposed over `GET`.
 
 ### File upload
@@ -149,8 +158,8 @@ that turns a typed name into a `User`, and no employee-facing way to change iden
 is R-02/R-16 — being at somebody else's assigned computer — not being able to *claim* to be them. |
 | R-02 | Shared/unlocked workstation lets another person use an existing session | High | An explicit "Leave" that revokes the session server-side. The 24-hour **idle** window (D-04) renews while the browser is in use, so a session on a machine someone keeps using does not time out on its own — expiry bounds abandoned sessions, it is not a defence against a person at an unlocked desk. Screen lock remains an organizational control. |
 | R-16 | **Persistent device identity is a long-lived bearer token** (D-13) — whoever holds the browser profile is the computer's assigned employee for up to `DEVICE_ID_TTL_DAYS`, with no further check | High | Knowingly accepted as the cost of an identity model with no passwords. It *is* R-02 restated: the person at an assigned desk is that employee. Mitigations are containment, not prevention — a bounded TTL, `HttpOnly`/`Secure`/`SameSite` flags, TLS, **administrator-only retirement and re-enrollment** of a computer whose cookie may have been copied, and the rule that every lookup re-checks the device's current assignment so a reassignment revokes the previous employee at once. Employees can no longer clear or switch identity themselves, which removes the old "Switch User" containment — that control now belongs to the administrator, which is the intent. **The device cookie must never relax any authorization decision.** Resolved properly only by authentication (D-11 defers it). |
-| R-17 | **The administrator token is a single shared secret** guarding the device registry, with no rate limiting and no per-administrator attribution | High | The smallest honest mechanism, stated as such rather than dressed up ([12-admin-device-identity.md](12-admin-device-identity.md) §5). Constant-time comparison; exchanged once for a short-lived signed cookie so the token is not replayed; rotating it invalidates every administrator session; **an unconfigured server refuses all administration rather than allowing it**. Admin access governs the registry only and grants no access to any conversation, message or file. **Phase 8 put `/admin` and `/api/admin` behind the network gate**, so the token is no longer the only thing in front of the registry — but it is still the only thing separating one employee on the company network from the registry, which is why rate limiting (**Phase 9**), per-administrator accounts and an audit trail remain open. A stricter operator-only range for `/admin` is possible today by putting it on its own host or narrowing the deployment's policy; a per-path policy is not implemented. |
-| R-18 | **A setup code is a bearer capability** — whoever holds an unredeemed code can enrol a browser as that computer's assigned employee | Medium | ~98 bits of entropy, stored only as a SHA-256 hash, expiring after `ENROLLMENT_TTL_HOURS`, and cleared inside the transaction that redeems it so it works exactly once. It carries no name and no choice of employee, so it cannot be used to become somebody else — only to complete an assignment an administrator already made. Not rate-limited yet (**Phase 9**). Codes are shown once, to an administrator, and are never recoverable afterwards. |
+| R-17 | **The administrator token is a single shared secret** guarding the device registry, with no rate limiting and no per-administrator attribution | High | The smallest honest mechanism, stated as such rather than dressed up ([12-admin-device-identity.md](12-admin-device-identity.md) §5). Constant-time comparison; exchanged once for a short-lived signed cookie so the token is not replayed; rotating it invalidates every administrator session; **an unconfigured server refuses all administration rather than allowing it**. Admin access governs the registry only and grants no access to any conversation, message or file. **Phase 8 put `/admin` and `/api/admin` behind the network gate**, so the token is no longer the only thing in front of the registry — but it is still the only thing separating one employee on the company network from the registry, which is why per-administrator accounts and an audit trail remain open. **Phase 9 added rate limiting**: ten sign-in attempts per client address per 15 minutes, then a 15-minute penalty, so the token cannot be ground down by an insider on the company network. A stricter operator-only range for `/admin` is possible today by putting it on its own host or narrowing the deployment's policy; a per-path policy is not implemented. |
+| R-18 | **A setup code is a bearer capability** — whoever holds an unredeemed code can enrol a browser as that computer's assigned employee | Medium | ~98 bits of entropy, stored only as a SHA-256 hash, expiring after `ENROLLMENT_TTL_HOURS`, and cleared inside the transaction that redeems it so it works exactly once. It carries no name and no choice of employee, so it cannot be used to become somebody else — only to complete an assignment an administrator already made. **Phase 9** added a rate limit (20 attempts per client address per 15 minutes, then a penalty) and made redemption a single conditional statement, so two requests racing with the same code cannot both succeed. Codes are shown once, to an administrator, and are never recoverable afterwards. |
 | R-03 | Session token theft over the network | High if HTTP | TLS in production; `Secure` cookie. If TLS is not deployed, the whole model degrades — see Q-14. |
 | R-04 | Insider reads conversations they are a member of | Medium | Out of technical scope; membership is the intended boundary. Group membership changes are recorded as `SYSTEM` messages so additions are visible. |
 | R-05 | Enumeration of conversation/message/file ids | Medium | UUIDv4 ids are not enumerable, and authorization is enforced regardless. Hiding a URL is never the control (`CLAUDE.md` §20). |
@@ -188,7 +197,12 @@ decision in this phase, and it costs nothing to make now.
 
 ---
 
-## 6. Phase 9 security test checklist (to be executed later)
+## 6. Phase 9 security test checklist
+
+Executed in Phase 9. The authorization items below are covered by `tests/chat/`, the network items
+by `tests/net/` and the scratchpad `net-e2e` run, and the hardening added in Phase 9 by
+`tests/security/` and the `phase9-e2e` run
+([19-phase-9-security-hardening.md](19-phase-9-security-hardening.md)).
 
 - Request another user's conversation, message, member list, and file id → expect 403/404
 - Add a user to an existing group, then have them request a message id **and an attachment id**

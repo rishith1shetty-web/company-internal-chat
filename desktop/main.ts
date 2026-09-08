@@ -52,6 +52,7 @@ import {
 import {
   DEFAULT_SERVER_URL,
   DEVICE_COOKIE_NAME,
+  PACKAGED_CONFIG_FILENAME,
   SERVER_CONFIG_FILENAME,
   ServerUrlError,
   readServerUrlFromConfig,
@@ -127,6 +128,28 @@ function readConfigFile(): string | undefined {
 }
 
 /** Optional per-installation flags that live alongside `serverUrl`. */
+/**
+ * The address baked in when this package was built, if any.
+ *
+ * Sits beside `main.js` — inside the asar on a packaged install, in `dist-desktop/` when running
+ * from source — and is written by `scripts/desktop-assets.mjs` from DESKTOP_SERVER_URL at build
+ * time. Absent is the normal state for a build made without one, and simply means the client falls
+ * through to the loopback default.
+ */
+function readPackagedServerUrl(): string | undefined {
+  const path = resourcePath(PACKAGED_CONFIG_FILENAME);
+  if (!existsSync(path)) return undefined;
+
+  try {
+    return readServerUrlFromConfig(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    // Build output this application wrote itself; if it is unreadable something is wrong with the
+    // package, and falling through is better than refusing to start.
+    console.warn(`[desktop] ${PACKAGED_CONFIG_FILENAME} could not be read; ignoring it.`);
+    return undefined;
+  }
+}
+
 function readConfigFlag(name: string): boolean {
   const path = join(app.getPath('userData'), SERVER_CONFIG_FILENAME);
   if (!existsSync(path)) return false;
@@ -152,6 +175,7 @@ function loadServerConfiguration(): void {
     server = resolveServerUrl({
       env: process.env.DESKTOP_SERVER_URL,
       file: readConfigFile(),
+      packaged: readPackagedServerUrl(),
     });
 
     console.log(`[desktop] Company server: ${server.url} (from ${server.source})`);
@@ -687,10 +711,27 @@ function applyStartupPreference(): void {
   if (openAtLogin) console.log('[desktop] Launch at Windows sign-in is enabled.');
 }
 
-function registerIpc(): void {
-  ipcMain.on(CHANNELS.notify, (_event, payload: unknown) => showNativeNotification(payload));
+/**
+ * Is this IPC message from the window we created?
+ *
+ * The navigation rules already stop this window loading anything but the company server and the
+ * bundled offline page, `webviewTag` is off, and `setWindowOpenHandler` denies every request — so
+ * there is no second renderer for a message to come from. This is the check that keeps that true
+ * rather than assumed: a channel that acts on whatever arrives is a channel that quietly becomes a
+ * hole the first time a future edit introduces another `webContents`.
+ */
+function isTrustedSender(event: { sender: Electron.WebContents }): boolean {
+  return mainWindow !== null && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
+}
 
-  ipcMain.on(CHANNELS.closeNotification, (_event, id: unknown) => {
+function registerIpc(): void {
+  ipcMain.on(CHANNELS.notify, (event, payload: unknown) => {
+    if (!isTrustedSender(event)) return;
+    showNativeNotification(payload);
+  });
+
+  ipcMain.on(CHANNELS.closeNotification, (event, id: unknown) => {
+    if (!isTrustedSender(event)) return;
     if (typeof id !== 'string') return;
     for (const [key, notification] of liveNotifications) {
       if (key.endsWith(`:${id}`)) {
@@ -700,14 +741,21 @@ function registerIpc(): void {
     }
   });
 
-  ipcMain.on(CHANNELS.reload, () => loadServer());
+  ipcMain.on(CHANNELS.reload, (event) => {
+    if (!isTrustedSender(event)) return;
+    loadServer();
+  });
 
-  ipcMain.handle(CHANNELS.connectionInfo, () => ({
-    // The address the employee is trying to reach. Shown so somebody can tell IT which server the
-    // client is pointed at — it is a LAN address, not a secret, and it is already in the window.
-    serverUrl: server?.url ?? DEFAULT_SERVER_URL,
-    insecure: server?.insecure ?? false,
-    // Deliberately plain language. No error code, no stack, no filesystem path (CLAUDE.md §13).
-    message: lastFailure || startupError || '',
-  }));
+  ipcMain.handle(CHANNELS.connectionInfo, (event) => {
+    if (!isTrustedSender(event)) return null;
+
+    return {
+      // The address the employee is trying to reach. Shown so somebody can tell IT which server the
+      // client is pointed at — it is a LAN address, not a secret, and it is already in the window.
+      serverUrl: server?.url ?? DEFAULT_SERVER_URL,
+      insecure: server?.insecure ?? false,
+      // Deliberately plain language. No error code, no stack, no filesystem path (CLAUDE.md §13).
+      message: lastFailure || startupError || '',
+    };
+  });
 }

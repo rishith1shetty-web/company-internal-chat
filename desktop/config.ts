@@ -11,14 +11,25 @@
  *
  * RESOLUTION ORDER, highest first:
  *
- *   1. DESKTOP_SERVER_URL in the environment.
+ *   1. DESKTOP_SERVER_URL in the environment, at RUN time.
  *        Development, and a machine-wide environment variable set by an administrator.
  *   2. `serverUrl` in server.json, in the Electron user-data directory.
  *        %APPDATA%\Rising Path Recruiters Chat\server.json on a packaged Windows install. This
  *        is the production mechanism: the address is per-installation data, so upgrading the
  *        application does not disturb it and the installer does not have to be rebuilt per site.
- *   3. http://localhost:3000
+ *   3. The address baked in at BUILD time, from DESKTOP_SERVER_URL when the package was made.
+ *        What an employee gets on first launch, before anybody has configured anything. It is
+ *        below server.json on purpose: a site that needs a different address must be able to set
+ *        one without waiting for a new installer, so a per-installation file still wins.
+ *   4. http://localhost:3000
  *        A developer running the server on the same machine.
+ *
+ * THE DISTINCTION BETWEEN (1) AND (3) IS THE POINT, and it is easy to get wrong: DESKTOP_SERVER_URL
+ * is read out of the environment of whichever process is running. During `electron-builder` that is
+ * the BUILD machine, and the packaged application never sees it again — so setting the variable
+ * while packaging used to have no effect whatsoever on the resulting installer, which would still
+ * default to localhost. Level (3) is what carries a build-time value into the shipped application:
+ * `scripts/desktop-assets.mjs` writes it beside `main.js`, and `main.ts` reads it back.
  *
  * The resolution is a pure function over values the caller has already read, so every branch —
  * including every way the value can be malformed — is testable without a filesystem or an
@@ -26,13 +37,21 @@
  */
 
 /** Where a resolved URL came from. Reported at startup so an operator can see which won. */
-export type ServerUrlSource = 'environment' | 'config-file' | 'default';
+export type ServerUrlSource = 'environment' | 'config-file' | 'packaged' | 'default';
 
 export interface ServerUrlSources {
   /** DESKTOP_SERVER_URL, as read from the environment. */
   env?: string | undefined;
   /** `serverUrl` as read from server.json, or undefined when the file is absent or unreadable. */
   file?: string | undefined;
+  /**
+   * The address baked in when this package was built, or undefined for an unconfigured build.
+   *
+   * Written by `scripts/desktop-assets.mjs` from DESKTOP_SERVER_URL at build time and shipped
+   * inside the application, so it is the default an employee gets before anything is configured
+   * on their machine.
+   */
+  packaged?: string | undefined;
 }
 
 export interface ResolvedServerUrl {
@@ -51,8 +70,16 @@ export class ServerUrlError extends Error {
   }
 }
 
-/** The fallback. Loopback, so it can never accidentally point at somebody else's server. */
+/**
+ * The last-resort fallback, for a build made with no DESKTOP_SERVER_URL set.
+ *
+ * Loopback, so it can never accidentally point at somebody else's server, and so an unconfigured
+ * build fails visibly on an employee's machine rather than quietly connecting somewhere unintended.
+ */
 export const DEFAULT_SERVER_URL = 'http://localhost:3000';
+
+/** The generated file the build writes beside `main.js`. Git-ignored: it is build output. */
+export const PACKAGED_CONFIG_FILENAME = 'packaged-server.json';
 
 /** The file an administrator edits on a packaged installation. */
 export const SERVER_CONFIG_FILENAME = 'server.json';
@@ -131,6 +158,9 @@ export function resolveServerUrl(sources: ServerUrlSources = {}): ResolvedServer
   }
   if (typeof sources.file === 'string' && sources.file.trim().length > 0) {
     candidates.push({ value: sources.file, source: 'config-file' });
+  }
+  if (typeof sources.packaged === 'string' && sources.packaged.trim().length > 0) {
+    candidates.push({ value: sources.packaged, source: 'packaged' });
   }
   candidates.push({ value: DEFAULT_SERVER_URL, source: 'default' });
 

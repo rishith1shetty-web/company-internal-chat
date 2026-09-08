@@ -107,9 +107,10 @@ const DEFAULT_ENROLLMENT_TTL_HOURS = 24;
 /**
  * Shortest admin token accepted.
  *
- * The token is a bearer secret with no rate limiting in front of it (Phase 9), so a short one is
- * not a weaker choice by the operator — it is a broken configuration, and the application says so
- * at startup rather than running with it.
+ * The token is a bearer secret. Sign-in attempts are rate limited per client address (Phase 9,
+ * `server.ts`), but a limit is a ceiling on guessing speed and not a substitute for entropy — a
+ * short token is not a weaker choice by the operator, it is a broken configuration, and the
+ * application says so at startup rather than running with it.
  */
 const MIN_ADMIN_TOKEN_LENGTH = 24;
 

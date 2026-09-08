@@ -188,7 +188,7 @@ not represented as more than it is:
 | Limitation | Where it belongs |
 | --- | --- |
 | One shared token — actions cannot be attributed to an individual administrator | A real admin account model, post-Phase 10 |
-| No rate limiting or lockout on `/api/admin/session` or `/api/enroll` | **Phase 9** |
+| ~~No rate limiting or lockout on `/api/admin/session` or `/api/enroll`~~ | **Done in Phase 9** — per-address limits in `server.ts`; see [19-phase-9-security-hardening.md](19-phase-9-security-hardening.md) §2.1 |
 | `/admin` and `/api/admin` reachable from anywhere the application is | **Phase 8** — restrict at the reverse proxy / firewall |
 | No audit log of who assigned or reassigned what, beyond application logs | Phase 9/10 |
 | The device cookie remains a bearer token (R-16) | Unchanged; real authentication replaces `resolveIdentity()` |

@@ -9,6 +9,9 @@
  * told, not quietly connected to localhost where nothing will be found.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -17,6 +20,7 @@ import {
   ServerUrlError,
   parseServerUrl,
   readServerUrlFromConfig,
+  PACKAGED_CONFIG_FILENAME,
   resolveServerUrl,
 } from '@/desktop/config';
 
@@ -64,6 +68,82 @@ describe('resolution order', () => {
 
   it('names the file an administrator has to edit', () => {
     expect(SERVER_CONFIG_FILENAME).toBe('server.json');
+  });
+});
+
+describe('the address baked in at build time', () => {
+  /*
+   * THE BUG THIS LEVEL EXISTS TO FIX. `DESKTOP_SERVER_URL` is read from the environment of
+   * whichever process is running. During `electron-builder` that is the BUILD machine, and the
+   * packaged application never sees that environment again — so setting the variable while
+   * packaging produced an installer that still defaulted to localhost, silently. The build now
+   * writes the value into the package, and this is the level that reads it back.
+   */
+  it('is used when nothing is configured on the machine', () => {
+    const resolved = resolveServerUrl({ packaged: 'http://192.0.2.10:3000' });
+
+    expect(resolved.url).toBe('http://192.0.2.10:3000');
+    expect(resolved.source).toBe('packaged');
+  });
+
+  it('beats the loopback default, which is the whole point of baking it in', () => {
+    expect(resolveServerUrl({ packaged: 'http://192.0.2.10:3000' }).source).not.toBe('default');
+  });
+
+  it('LOSES to server.json, so a site can move without waiting for a new installer', () => {
+    /*
+     * The ordering that matters in production. The baked address is a first-launch default; an
+     * administrator who edits server.json on a machine must not have it ignored because somebody
+     * built the installer with a different address months earlier.
+     */
+    const resolved = resolveServerUrl({
+      file: 'https://chat.example.local',
+      packaged: 'http://192.0.2.10:3000',
+    });
+
+    expect(resolved.url).toBe('https://chat.example.local');
+    expect(resolved.source).toBe('config-file');
+  });
+
+  it('loses to the environment too', () => {
+    const resolved = resolveServerUrl({
+      env: 'https://chat.example.local',
+      packaged: 'http://192.0.2.10:3000',
+    });
+
+    expect(resolved.source).toBe('environment');
+  });
+
+  it('falls through to loopback for a build made without one', () => {
+    // An unconfigured build must fail visibly on an employee's machine, not connect somewhere
+    // unintended.
+    expect(resolveServerUrl({ packaged: undefined }).source).toBe('default');
+    expect(resolveServerUrl({ packaged: '   ' }).source).toBe('default');
+  });
+
+  it('is still refused when it is malformed, rather than falling through', () => {
+    // A typo in the build environment should fail the build; if one ever reaches a package, it
+    // must surface as an error screen and not as a silent connection to localhost.
+    expect(() => resolveServerUrl({ packaged: 'htp://192.0.2.10:3000' })).toThrow(ServerUrlError);
+  });
+
+  it('is the same filename the build script actually writes', () => {
+    /*
+     * `scripts/desktop-assets.mjs` writes this name out as a literal, because it is plain ESM run
+     * by node and cannot import a TypeScript module. That duplication is only safe while something
+     * notices when the two stop agreeing — otherwise the build would write a file the client never
+     * reads, and every package would quietly fall back to localhost with nothing failing to say so.
+     *
+     * So the script is read and its literal compared, rather than this test merely restating the
+     * constant back to itself.
+     */
+    const script = readFileSync(
+      join(import.meta.dirname, '..', '..', 'scripts', 'desktop-assets.mjs'),
+      'utf8',
+    );
+
+    const declared = /const PACKAGED_CONFIG = '([^']+)'/.exec(script);
+    expect(declared?.[1]).toBe(PACKAGED_CONFIG_FILENAME);
   });
 });
 

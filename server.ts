@@ -23,11 +23,46 @@ import { assertNetworkPolicyConfigured, loadConfig, ConfigError } from './lib/co
 import { disconnectDb, getDb } from './lib/db/prisma';
 import { createLogger, describeError, type Logger } from './lib/logging/logger';
 import { createNetworkGate } from './lib/net/gate';
+import { createRateLimiter, type RateLimitRule } from './lib/http/rate-limit';
+import {
+  bodyLimitFor,
+  guardedEndpointFor,
+  isSameOriginWrite,
+  isUnsafeMethod,
+  normalisePath,
+  type GuardedEndpoint,
+} from './lib/http/request-guard';
 import { SOCKET_PATH } from './lib/realtime/events';
 import { createRealtimeGateway, type RealtimeGateway } from './lib/realtime/gateway';
 
 /** Time to wait for in-flight requests to finish before forcing exit. */
 const SHUTDOWN_GRACE_MS = 10_000;
+
+/**
+ * How hard the two secret-guessing endpoints may be guessed at (Phase 9).
+ *
+ * Both were explicitly deferred to this phase by the code they protect — see the notes in
+ * `lib/auth/admin.ts` and `app/api/enroll/route.ts`.
+ *
+ * The numbers are set by what a PERSON does, not by what sounds strict. An administrator typing a
+ * long random token will occasionally mistype it; ten attempts in a quarter of an hour is far more
+ * room than that needs, and still leaves an attacker under a thousand guesses a day against a
+ * 24-character minimum secret. Setting it to three would lock out a real administrator on a bad
+ * morning — an outage caused by a security control, which is the failure mode that makes people
+ * switch security controls off.
+ *
+ * Enrollment is more generous because the code is read off one screen and typed on another, with
+ * dashes that may or may not be included, so a mistyped attempt or two is ordinary. The code
+ * carries ~98 bits, so the limit is not what makes guessing hopeless — it is what stops the
+ * endpoint being hammered, and what puts the attempt in the log.
+ */
+const RATE_LIMITS: Record<GuardedEndpoint, RateLimitRule> = {
+  'admin-sign-in': { limit: 10, windowMs: 15 * 60_000, blockMs: 15 * 60_000 },
+  'device-enrollment': { limit: 20, windowMs: 15 * 60_000, blockMs: 15 * 60_000 },
+};
+
+/** How often a repeat throttling event from one address is logged. Same budget logic as the gate. */
+const THROTTLE_LOG_INTERVAL_MS = 60_000;
 
 async function main(): Promise<void> {
   // Load `.env` before reading configuration.
@@ -77,6 +112,37 @@ async function main(): Promise<void> {
    */
   const gate = createNetworkGate({ policy: config.networkPolicy, logger });
 
+  /*
+   * The rate limiter (Phase 9).
+   *
+   * One per process, built here alongside the gate, and consulted only for the two endpoints
+   * `guardedEndpointFor` names. In-memory by design: this deployment is a single Node process on
+   * the company server (D-09), so a shared store would be infrastructure bought to synchronise one
+   * writer with itself. What it is and is not is set out in lib/http/rate-limit.ts.
+   */
+  const limiter = createRateLimiter();
+
+  /** Throttling events are logged on the same budget as denials, and for the same reason. */
+  const throttleLoggedAt = new Map<string, number>();
+
+  function noteThrottle(endpoint: GuardedEndpoint, address: string | null): void {
+    const key = `${endpoint}:${address ?? '<unresolved>'}`;
+    const last = throttleLoggedAt.get(key) ?? 0;
+    const timestamp = Date.now();
+    if (timestamp - last < THROTTLE_LOG_INTERVAL_MS) return;
+
+    // Bounded, so a spray of source addresses cannot grow this map without limit.
+    if (throttleLoggedAt.size >= 512) throttleLoggedAt.clear();
+    throttleLoggedAt.set(key, timestamp);
+
+    // The endpoint and the caller's own address. Never the value they submitted: a near-miss
+    // token or setup code in a log file is still a secret (CLAUDE.md §14).
+    logger.warn('Too many attempts; refusing further requests for now', {
+      endpoint,
+      address: address ?? '<unresolved>',
+    });
+  }
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     /*
      * FIRST, BEFORE NEXT.JS SEES THE REQUEST.
@@ -95,6 +161,71 @@ async function main(): Promise<void> {
     if (!decision.allowed) {
       gate.denyHttp(req, res);
       return;
+    }
+
+    /*
+     * SECOND, STILL BEFORE NEXT.JS (Phase 9).
+     *
+     * Three refusals that belong here for the same reason the gate does: a route handler receives
+     * a `Request`, which has headers but no socket and no way to stop a body arriving. All three
+     * are cheap, and all three answer before any of a request body is read.
+     */
+    const path = normalisePath(req.url);
+
+    /*
+     * Cross-site writes.
+     *
+     * The identity cookies are already `SameSite=Lax`, which stops a cross-site form post from
+     * carrying them. This is the second lock rather than the first: a browser attaches `Origin` to
+     * exactly the requests this refuses, and comparing it with `Host` needs no configuration an
+     * operator could get wrong.
+     */
+    if (isUnsafeMethod(req.method) && !isSameOriginWrite(req.headers.origin, req.headers.host)) {
+      logger.warn('Request refused: cross-origin write', { path, method: req.method });
+      refuse(res, 403, 'CROSS_ORIGIN_FORBIDDEN', 'That request did not come from this application.');
+      return;
+    }
+
+    /*
+     * Oversized bodies.
+     *
+     * The declared length only — a sender who lies about it, or sends none at all, is caught while
+     * the body is read (`readJsonBody` in lib/http/route-helpers.ts). This is the cheap half: an
+     * honest 2 GB POST is refused before Next.js allocates anything for it.
+     *
+     * The file upload route is deliberately not bounded here. Its body IS a file, and it is
+     * counted as it arrives by lib/files/storage.ts — the only measurement that does not depend on
+     * believing the sender.
+     */
+    const limit = bodyLimitFor(req.method, path);
+    if (limit !== null) {
+      const declared = Number(req.headers['content-length']);
+      if (Number.isFinite(declared) && declared > limit) {
+        logger.warn('Request refused: body too large', { path, declared, limit });
+        refuse(res, 413, 'PAYLOAD_TOO_LARGE', 'That request was too large.');
+        return;
+      }
+    }
+
+    /*
+     * Guessing at a secret.
+     *
+     * Keyed on the address the network gate already resolved, so the limiter and the allow-list
+     * can never disagree about who a caller is.
+     */
+    const guarded = guardedEndpointFor(req.method, path);
+    if (guarded) {
+      const verdict = limiter.consume(
+        `${guarded}:${decision.address ?? '<unresolved>'}`,
+        RATE_LIMITS[guarded],
+      );
+
+      if (!verdict.allowed) {
+        noteThrottle(guarded, decision.address);
+        res.setHeader('Retry-After', String(verdict.retryAfterSeconds));
+        refuse(res, 429, 'TOO_MANY_ATTEMPTS', 'Too many attempts. Please wait and try again.');
+        return;
+      }
     }
 
     // Next's handler returns a promise; an unhandled rejection here would take down the
@@ -192,6 +323,25 @@ async function main(): Promise<void> {
   }
 
   installShutdownHandlers(server, app, logger, gateway);
+}
+
+/**
+ * A refusal from the guards above.
+ *
+ * One shape, always JSON, never a redirect, and never anything about why beyond a stable code —
+ * the same discipline `lib/net/gate.ts` applies to a network denial (CLAUDE.md §13).
+ */
+function refuse(res: ServerResponse, status: number, code: string, message: string): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.end(JSON.stringify({ error: { code, message } }));
 }
 
 /** Loopback in either family, plus the hostname form. Used only for the startup warning above. */

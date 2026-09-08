@@ -80,11 +80,12 @@ process at all ([tests/desktop/](../tests/desktop/), 76 tests across 5 files).
 
 Highest priority first:
 
-| # | Source | Used for |
-|---|---|---|
-| 1 | `DESKTOP_SERVER_URL` in the environment | Development, and a machine-wide variable set by an administrator |
-| 2 | `serverUrl` in `server.json`, in the Electron user-data directory | **Packaged production**: `%APPDATA%\Rising Path Recruiters Chat\server.json` |
-| 3 | `http://localhost:3000` | A developer running the server on the same machine |
+| # | Source | Read at | Used for |
+|---|---|---|---|
+| 1 | `DESKTOP_SERVER_URL` in the environment | **run** time | Development, and a machine-wide variable set by an administrator |
+| 2 | `serverUrl` in `server.json`, in the Electron user-data directory | **run** time | **Packaged production**: `%APPDATA%\Rising Path Recruiters Chat\server.json` |
+| 3 | `DESKTOP_SERVER_URL` when the package was built | **build** time | The address a fresh installation starts with, for a single-site deployment |
+| 4 | `http://localhost:3000` | compiled in | A developer running the server on the same machine |
 
 ```jsonc
 // %APPDATA%\Rising Path Recruiters Chat\server.json
@@ -94,10 +95,25 @@ Highest priority first:
 }
 ```
 
-**No company address is compiled into the build.** The fallback is loopback — wrong everywhere
-except a developer's own machine, so it fails visibly rather than connecting somewhere
-unintended. The address lives in per-installation data, so upgrading the client does not disturb
-it and the installer does not have to be rebuilt per site.
+**Levels 1 and 3 are the same variable read by two different processes, and confusing them is the
+mistake this table exists to prevent.** `desktop/main.ts` reads `DESKTOP_SERVER_URL` from the
+environment of the *employee's* Electron process. During `electron-builder` the variable is in the
+*build* machine's environment, which the packaged application never sees again — so setting it while
+packaging had no effect at all on the installer, which still defaulted to localhost. Level 3 is what
+carries a build-time value into the shipped application: `scripts/desktop-assets.mjs` writes
+`packaged-server.json` beside `main.js`, the `dist-desktop/**` entry in the electron-builder `files`
+list packs it into the asar, and `readPackagedServerUrl()` reads it back.
+
+**Level 3 sits below `server.json` on purpose.** The baked address is a *default for a fresh
+installation*, not a decision the installer imposes: an administrator who needs one machine — or a
+whole site — pointed elsewhere writes `server.json` and it wins, without waiting for a new installer.
+
+**No company address is written into tracked source** (CLAUDE.md §7). The build-time value comes from
+`.env` or the shell, and the file it generates lives in the git-ignored `dist-desktop/`. Build with
+`DESKTOP_SERVER_URL` unset and nothing is baked in at all: the fallback is loopback — wrong
+everywhere except a developer's own machine, so it fails visibly rather than connecting somewhere
+unintended. A build made with an address set and then rebuilt without one *removes* the stale file
+rather than shipping an address nobody meant to configure.
 
 A source that is present but **invalid is an error**, not a reason to fall through to the next one.
 An administrator who mistyped the server name gets told, rather than being quietly connected to
@@ -381,7 +397,7 @@ Development:
 
 ```bash
 npm run dev                                        # the company server
-set DESKTOP_SERVER_URL=http://192.168.29.244:3000  # or leave unset for localhost:3000
+set DESKTOP_SERVER_URL=http://<this-machine-lan-ip>:3000  # or leave unset for localhost:3000
 npm run desktop:dev
 ```
 

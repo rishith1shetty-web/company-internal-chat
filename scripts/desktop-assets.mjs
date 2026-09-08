@@ -18,7 +18,7 @@
  */
 
 import { deflateSync, inflateSync } from 'node:zlib';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +26,27 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = join(root, 'public', 'brand', 'rising-path-mark.png');
 const ASSET_DIR = join(root, 'desktop', 'assets');
 const BUILD_DIR = join(root, 'dist-desktop');
+
+/**
+ * Must match `PACKAGED_CONFIG_FILENAME` in desktop/config.ts.
+ *
+ * Written out rather than imported: this script is plain ESM run by node, and importing a
+ * TypeScript module here would mean compiling one to run the build that compiles it.
+ * `tests/desktop/config.test.ts` asserts the two agree.
+ */
+const PACKAGED_CONFIG = 'packaged-server.json';
+
+/*
+ * Load `.env`, so `npm run desktop:package:win` picks up DESKTOP_SERVER_URL from the project's own
+ * configuration rather than requiring it to be typed into the shell every time. Node's built-in
+ * loader, as in server.ts and prisma.config.ts — no dependency (CLAUDE.md §3). It does NOT override
+ * a variable already set in the environment, so a one-off shell value still wins for a one-off build.
+ */
+try {
+  process.loadEnvFile(join(root, '.env'));
+} catch {
+  // No .env on this machine: the package simply defaults to localhost.
+}
 
 /** The sizes Windows draws an application icon at: tray, taskbar, Alt-Tab, and the desktop. */
 const ICON_SIZES = [16, 24, 32, 48, 64, 128, 256];
@@ -340,6 +361,69 @@ function stageBuildOutput() {
   }
 
   console.log('[assets] Staged offline.html and icons into dist-desktop.');
+
+  writePackagedServerUrl();
+}
+
+/**
+ * Carries DESKTOP_SERVER_URL from the BUILD environment into the shipped application.
+ *
+ * WHY THIS EXISTS. `desktop/main.ts` reads `process.env.DESKTOP_SERVER_URL` at run time, in the
+ * employee's Electron process — so setting that variable while running electron-builder changed
+ * nothing at all about the installer it produced. The packaged client still defaulted to
+ * localhost, and the only way to point it anywhere was to hand-write server.json on every machine.
+ *
+ * So the build writes the value into a small generated file beside `main.js`. It is picked up by
+ * the `dist-desktop/**` entry in the electron-builder `files` list, so it travels inside the asar
+ * with no packaging change, and `resolveServerUrl` treats it as the level BELOW server.json — a
+ * default for a fresh installation, never something that overrides a site's own configuration.
+ *
+ * The address itself is never written into tracked source (CLAUDE.md §7): it comes from the
+ * environment, and this output is git-ignored along with the rest of dist-desktop.
+ */
+function writePackagedServerUrl() {
+  const target = join(BUILD_DIR, PACKAGED_CONFIG);
+  const configured = (process.env.DESKTOP_SERVER_URL ?? '').trim();
+
+  if (configured.length === 0) {
+    /*
+     * Remove a file left by a previous build rather than leaving it in place.
+     *
+     * Without this, once anybody had built with an address set, every later build would keep
+     * shipping it — a stale address baked into an installer that nobody meant to configure, which
+     * is far worse than the honest localhost default.
+     */
+    if (existsSync(target)) {
+      rmSync(target);
+      console.log(`[assets] DESKTOP_SERVER_URL not set; removed the stale ${PACKAGED_CONFIG}.`);
+    } else {
+      console.log(`[assets] DESKTOP_SERVER_URL not set; the package will default to localhost.`);
+    }
+    return;
+  }
+
+  // Validated here so a typo fails the build, rather than shipping an installer that cannot
+  // start. Same two protocols the client accepts at run time.
+  let origin;
+  try {
+    const parsed = new URL(configured);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`protocol ${parsed.protocol} is not http or https`);
+    }
+    if (parsed.username.length > 0 || parsed.password.length > 0) {
+      throw new Error('it must not contain a username or password');
+    }
+    origin = parsed.origin;
+  } catch (error) {
+    throw new Error(
+      `DESKTOP_SERVER_URL is not a usable address (${String(error.message ?? error)}). ` +
+        'Use the form http://server:3000 or https://chat.example.local',
+    );
+  }
+
+  writeFileSync(target, `${JSON.stringify({ serverUrl: origin }, null, 2)}
+`, 'utf8');
+  console.log(`[assets] ${PACKAGED_CONFIG}  serverUrl=${origin}  (from DESKTOP_SERVER_URL)`);
 }
 
 generateAssets();

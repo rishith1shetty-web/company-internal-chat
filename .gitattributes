@@ -14,6 +14,7 @@
 *.zip binary
 *.woff binary
 *.woff2 binary
+*.wav binary
 
 # Generated; collapse in diffs and reviews.
 package-lock.json linguist-generated=true -diff

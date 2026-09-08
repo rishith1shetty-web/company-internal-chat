@@ -29,6 +29,7 @@ import { getDb } from '@/lib/db/prisma';
 import type { EnrollmentConfig } from '@/lib/devices/service';
 import type { StorageConfig } from '@/lib/files/storage';
 import { createLogger, describeError, type Logger } from '@/lib/logging/logger';
+import { JSON_BODY_LIMIT } from '@/lib/http/request-guard';
 
 const config = loadConfig();
 
@@ -252,10 +253,58 @@ export async function withAdmin(
   }
 }
 
-/** Reads a JSON body, returning `undefined` rather than throwing on malformed input. */
+/**
+ * Reads a JSON body, returning `undefined` rather than throwing on malformed input.
+ *
+ * BOUNDED (Phase 9). `request.json()` reads whatever it is sent, and Next.js applies no limit of
+ * its own to route handlers — its `bodySizeLimit` setting covers Server Actions only. So a single
+ * connection could make the server buffer an arbitrary amount of memory by posting a very large
+ * body to any endpoint here.
+ *
+ * `server.ts` already refuses an oversized body from its declared `Content-Length`, which catches
+ * the honest case before Next.js allocates anything. This is the half that does not depend on
+ * believing the sender: the stream is read in chunks and abandoned the moment the total passes the
+ * limit, so a chunked body with no declared length, or one that lies about it, costs the limit and
+ * not a byte more.
+ *
+ * An over-long body is reported as `undefined`, exactly like malformed JSON, so every caller
+ * already handles it — they answer 400. That is deliberately less precise than the 413 from
+ * server.ts: by this point the body was misdeclared, and an endpoint that explained the difference
+ * would be telling a prober which of its guesses was closer.
+ */
 export async function readJsonBody(request: Request): Promise<unknown> {
+  const body = request.body;
+  if (!body) return undefined;
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+
   try {
-    return await request.json();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      received += value.byteLength;
+      if (received > JSON_BODY_LIMIT) {
+        // Stop the sender rather than draining what is left: the request is already refused, and
+        // reading the rest of it is the cost this limit exists to avoid.
+        await reader.cancel().catch(() => {});
+        return undefined;
+      }
+
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    // A connection that broke mid-body is the client's problem, not a server error.
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(text);
   } catch {
     return undefined;
   }

@@ -29,7 +29,8 @@ import { decideAccess, type AccessDecision, type NetworkPolicy } from './policy'
  * summarised on the next line after this interval.
  *
  * This throttles LOG LINES, not requests. Every request is still evaluated and refused; nothing
- * here rate-limits traffic, which is Phase 9's subject and deliberately not started.
+ * here rate-limits traffic. Request rate limiting arrived in Phase 9 and lives beside this gate in
+ * `server.ts`, applied to the two endpoints that answer a guess at a secret (lib/http/rate-limit.ts).
  */
 const DENIAL_LOG_INTERVAL_MS = 60_000;
 
