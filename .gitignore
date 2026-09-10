@@ -37,7 +37,7 @@
 # Certificates and private keys.
 #
 # The real PKI lives OUTSIDE this repository (C:\company-chat-pki, docs/20-phase-10-deployment.md
-# §13), so nothing here should ever match. These rules exist so that a key copied into the working
+# §20), so nothing here should ever match. These rules exist so that a key copied into the working
 # tree for convenience cannot be committed by accident — a private key in Git history is not
 # something you can take back (CLAUDE.md §15).
 *.key

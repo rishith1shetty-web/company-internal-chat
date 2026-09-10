@@ -1,7 +1,8 @@
 # Phase 10 — Production Deployment
 
-**Status:** 10.2 (HTTPS foundation), 10.3 (production configuration and build) and 10.4 (HTTPS
-bring-up, Caddy, Windows services) are complete. 10.5 onwards not started.
+**Status:** 10.2 (HTTPS foundation), 10.3 (production configuration and build), 10.4 (HTTPS
+bring-up, Caddy, Windows services) and 10.5 (backup, restore rehearsal, final installer, rollout
+preparation) are complete. 10.6 not started.
 
 This document covers the Stage-A production deployment: this Windows PC acting as the company
 chat server, reached by employees over HTTPS at a LAN IP address. It is written for whoever
@@ -429,7 +430,235 @@ the certificate must still chain to the trusted root.
 
 ---
 
-## 11. The server IP must be reserved — it is currently DHCP
+## 11. Backup
+
+Two things have to be captured together: `company_chat_db` and `C:\company-chat\uploads`. A
+database backup on its own restores a system whose every attachment is a broken download.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\backup-now.ps1
+```
+
+Needs no elevation, stops nothing, and only reads. Output:
+
+```
+C:\company-chat\backups\YYYY-MM-DD_HH-mm-ss\
+├── company_chat_db.dump      pg_dump --format=custom --compress=6
+├── uploads\                  a mirror of UPLOAD_DIR
+├── checksums.txt             SHA-256 of the dump and of every file
+└── backup-manifest.json      non-secret metadata
+```
+
+**Order is not arbitrary: the database is dumped BEFORE the uploads are copied.** An attachment's
+file is written and renamed into place before its row is committed (`lib/files/storage.ts`), so:
+
+| Order | Worst case |
+|---|---|
+| **DB, then files** | an extra file with no row — a harmless orphan |
+| files, then DB | a row whose file was never copied — **a broken download** |
+
+**No write pause is needed for a routine backup.** `pg_dump` takes an MVCC snapshot, so the dump is
+internally consistent no matter what happens during it, and the ordering above makes the file set
+safe. A *server migration* is different — there the application is stopped first, so that no
+message can be accepted after the dump (§15).
+
+### Credentials
+
+The password is read from `production.env` and handed to `pg_dump` through **`PGPASSFILE`**,
+PostgreSQL's own mechanism, written to `C:\company-chat\pgpass.conf` with the same ACL as
+`production.env`. It never appears on a command line, in a shell history, in a log, or in this
+repository. Rewritten on every run, so a rotated password is picked up automatically.
+
+### The manifest
+
+Records the timestamp, database name and host, PostgreSQL version, dump filename, size and
+SHA-256, applied migration count, per-table row counts, upload file count and total bytes, and the
+`pg_dump` version. **It contains no password, no `DATABASE_URL`, no admin token and no key
+material** — `verify-backup.ps1` asserts that.
+
+---
+
+## 12. Verifying a backup
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\verify-backup.ps1          # newest backup
+powershell -ExecutionPolicy Bypass -File deploy\verify-backup.ps1 -Backup <path>
+```
+
+Read-only; it never connects to the production database. It checks that the files are present,
+that the dump's SHA-256 still matches the manifest, that `pg_restore --list` can read the archive,
+that all seven application tables **and `_prisma_migrations`** are inside it, that the upload count
+and byte total match, that every recorded checksum still holds, and that the metadata carries no
+secrets.
+
+### Verifying attachments
+
+```
+npx tsx scripts/verify-attachments.ts
+npx tsx scripts/verify-attachments.ts --upload-dir=<a backup or a restored copy>
+```
+
+Re-computes the SHA-256 of every stored file and compares it with the `checksumSha256` recorded at
+upload time. Read-only and safe to run at any time, including while employees are working.
+
+`--upload-dir` is what makes it useful for a server move: verify the **restored** files against the
+**restored** database before anybody is allowed to write to the new server. A row whose checksum was
+never recorded is reported separately rather than counted as verified.
+
+---
+
+## 13. Restore rehearsal
+
+A backup nobody has restored is a hope. But rehearsing must not go anywhere near production — and
+on this machine that matters more than usual, because the PostgreSQL 16 service also hosts
+`company`, `linkedin_auto_apply`, `resume_job_discovery` and `resume_job_discovery_test` for other
+projects.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\restore-rehearsal.ps1
+```
+
+**How the isolation works.** `initdb` creates a brand-new cluster in a temporary directory — a
+separate data directory with its own catalogues, not a database inside the existing server. It is
+started on **port 55432, bound to 127.0.0.1 only**, the backup is restored into it, everything is
+checked, and the cluster is stopped and deleted in a `finally` block so a failure part-way through
+still cleans up. The production service on 5432 is never contacted, reconfigured or restarted.
+
+It proves: `pg_restore` completes with `--exit-on-error`; all seven tables exist; `_prisma_migrations`
+holds **exactly 2 rows** with the expected names; every row count matches the manifest; and every
+attachment row correlates with a file in the backup.
+
+Three implementation notes, each of which cost real debugging time and will cost it again if
+undone:
+
+- **`postgres.exe` is launched directly, not through `pg_ctl`.** `pg_ctl start` does not reliably
+  exit on this machine; both `-w` and `Start-Process -Wait` hung forever while the cluster
+  underneath was healthy, leaving an orphaned process behind.
+- **The throwaway cluster uses trust auth**, and every client call passes `--no-password`. Password
+  auth bought nothing on a loopback-only ephemeral cluster and added a failure mode where any tool
+  that decided to prompt blocked on stdin with no console, hanging the whole rehearsal.
+- **Every SQL query goes through a file, never `--command`.** PowerShell 5.1 strips double quotes
+  out of native-command arguments, so `FROM "Session"` arrives as `FROM session` and PostgreSQL
+  reports that the relation does not exist — which looks exactly like a failed restore and is
+  nothing of the kind.
+
+---
+
+## 14. Restoring for real
+
+**There is deliberately no one-command restore.** Overwriting a live database is not something a
+tool should make easy, so the steps below are manual and each one is a decision.
+
+Restoring **into the active production database** requires dropping its contents first, which this
+project forbids from application and deployment code. If it is ever genuinely needed:
+
+1. **Stop `RisingPathChat`.** Never restore under a running application.
+2. Take a fresh backup of the current state first, however broken it seems — it is the only way back.
+3. Have a database administrator prepare the target by hand.
+4. `pg_restore --exit-on-error` the dump.
+5. Restore `uploads` from the same backup directory — never a different one.
+6. `npx tsx scripts/verify-attachments.ts`, and `npm run db:status` (must report no pending
+   migrations).
+7. Start `RisingPathChat`, then `RisingPathCaddy`.
+
+Rehearse on the isolated cluster (§13) first, always.
+
+---
+
+## 15. Moving to another server
+
+Everything survives: users, devices, conversations, group membership, `joinedAt` boundaries,
+messages, attachments and `_prisma_migrations`. None of it knows the server's address.
+
+**Prepare, days ahead, with no disruption.** Install Node 24, PostgreSQL 16 and Caddy on the new
+machine. Clone the repository, `npm ci`, `npm run build` — **build, never copy `.next`** (§6).
+Issue a new leaf certificate from the same root, for the new address. Configure the services and
+leave them stopped. Restore last night's backup as a rehearsal and run the attachment check.
+
+**Cutover, after hours:**
+
+| | Old server | New server |
+|---|---|---|
+| 1 | Announce; employees close the client | |
+| 2 | **Stop `RisingPathChat`** — this is the whole no-data-loss guarantee | |
+| 3 | Final `backup-now.ps1` (DB first, then files) | |
+| 4 | | Prepare `company_chat_db` by hand (a DBA action, never scripted) |
+| 5 | | `pg_restore` the dump, preserving `_prisma_migrations` |
+| 6 | | Restore `uploads` |
+| 7 | | `verify-attachments.ts` — every checksum must match |
+| 8 | | `npm run db:status` clean; `migrate deploy` must be a **no-op** |
+| 9 | | Configure `production.env`, HTTPS, Caddy, services |
+| 10 | | Smoke-test before reopening writes |
+| 11 | Disable services; keep the data for two weeks as rollback | |
+
+### If the address changes, employees re-enrol
+
+**Be clear about what does and does not carry over.** The `cic_device` cookie is scoped to the
+origin. A client pointed at a new address sends nothing for the old one, so:
+
+- The **installer must be rebuilt** with the new `DESKTOP_SERVER_URL`, and employees install it.
+- **Each PC needs a fresh setup code.** The administrator re-issues one per existing `Device` row,
+  so the device keeps its id, its assigned employee and all of that employee's history — nothing is
+  recreated and no conversation is lost.
+- Do **not** assume the old `User.id` re-links itself automatically. It is preserved in the
+  database, and re-enrolment attaches the machine back to it, but that is an administrator
+  re-issuing a code — not something that happens on its own.
+
+Keeping the same address avoids all of this. If the router can move the reservation to the new
+machine, the origin never changes: same certificate, same installer, no re-enrolment.
+
+---
+
+## 16. Employee rollout — one PC
+
+Everything the employee's machine needs is in `C:\company-chat\rollout\`: the installer, the public
+root certificate, and `INSTALL.txt`.
+
+| | Step | Where |
+|---|---|---|
+| 1 | PC is on the company LAN | employee PC |
+| 2 | `certutil -addstore -f Root rising-path-root-ca.crt` — **as Administrator** | employee PC |
+| 3 | Verify the thumbprint is `425EFBC0336000BB8CBD645EF36AE8B2DDD0D7E7` | employee PC |
+| 4 | Run `Rising Path Recruiters Chat Setup 0.1.0.exe`, choose **"Only me"** | employee PC |
+| 5 | Open `https://192.168.29.244/admin` | admin PC, browser |
+| 6 | Register the computer and name the employee | admin |
+| 7 | Copy the one-time setup code | admin |
+| 8 | Open the app → "Set up this computer" → enter the code | employee PC |
+| 9 | Confirm the right name appears | employee PC |
+| 10 | Send and receive a test message | both |
+| 11 | Upload and download a small file | both |
+| 12 | Confirm the notification sound and the desktop notification | employee PC |
+| 13 | Close and reopen the app — it must open straight into chat | employee PC |
+| 14 | Confirm there is no way to reach `/admin` and no sign-out control | employee PC |
+
+Step 3 is the one not to skip: it is what makes the certificate check meaningful rather than
+ceremonial.
+
+**Identity is bound to the origin.** Employees enrolled against `https://192.168.29.244` stay
+attached to that origin. See §15 for what a change of address costs.
+
+---
+
+## 17. Administrator commands
+
+| Task | Command |
+|---|---|
+| **Back up now** | `powershell -ExecutionPolicy Bypass -File deploy\backup-now.ps1` |
+| **Verify a backup** | `powershell -ExecutionPolicy Bypass -File deploy\verify-backup.ps1` |
+| **Rehearse a restore** | `powershell -ExecutionPolicy Bypass -File deploy\restore-rehearsal.ps1` |
+| **Verify attachments** | `npx tsx scripts/verify-attachments.ts` |
+| **Restore for real** | No single command, deliberately — see §14 |
+| Check migrations | `ENV_FILE=... npm run db:status` |
+| Check row counts | `ENV_FILE=... npm run db:audit` |
+| Service health | `powershell -File deploy\verify-services.ps1` (elevated) |
+
+Schedule `backup-now.ps1` nightly through Task Scheduler once real data exists, keep the
+destination on a different physical disk from `C:\`, and rehearse a restore periodically rather
+than only when something has gone wrong.
+
+---
+
+## 18. The server IP must be reserved — it is currently DHCP
 
 ```
 IPAddress       InterfaceAlias   PrefixOrigin   SuffixOrigin
@@ -445,11 +674,11 @@ reservation against its MAC address), or configure a static address outside the 
 
 Worth asking the router at the same time: **can that reservation later be moved to a different
 machine?** If it can, a future server move costs nothing but a database restore and a file copy —
-no new certificate, no new installer, no employee re-enrollment (see §19).
+no new certificate, no new installer, no employee re-enrollment (see §26).
 
 ---
 
-## 12. The internal CA trust model
+## 19. The internal CA trust model
 
 There is one private root CA. It signs server certificates for this application and nothing else.
 
@@ -472,7 +701,7 @@ the offline screen.
 
 ---
 
-## 13. What exists, and where
+## 20. What exists, and where
 
 **Nothing below is in the repository.** `C:\company-chat-pki` is outside the working tree, so Git
 cannot see it at all. `.gitignore` additionally refuses `*.key`, `*.pem`, `*.crt`, `*.cer`,
@@ -528,7 +757,7 @@ place as the media, not on the server.
 
 ---
 
-## 14. Certificate details
+## 21. Certificate details
 
 ### Root CA
 
@@ -573,11 +802,11 @@ not validate. It must be the `iPAddress` type, which is what `IP.1 = 192.168.29.
 the OpenSSL config.
 
 Validity is 398 days because that is the ceiling every client accepts without argument. Renewal
-goes in the operations calendar — see §18.
+goes in the operations calendar — see §25.
 
 ---
 
-## 15. Exact commands used
+## 22. Exact commands used
 
 Reproducible as printed. OpenSSL 3.5.7 ships with Git for Windows; nothing was installed.
 
@@ -656,7 +885,7 @@ icacls C:\company-chat-pki\server /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Ad
 
 ---
 
-## 16. Installing the root certificate on an employee PC
+## 23. Installing the root certificate on an employee PC
 
 Do this on the same visit as the EXE install. It is one command, run **as Administrator**:
 
@@ -679,7 +908,7 @@ If Active Directory is ever introduced, this becomes a Group Policy deployment i
 
 ---
 
-## 17. Verifying trust
+## 24. Verifying trust
 
 **On the employee PC, after installing the root** — confirm the store holds the right certificate:
 
@@ -689,7 +918,7 @@ Get-ChildItem Cert:\LocalMachine\Root |
   Select-Object Subject, Thumbprint, NotAfter
 ```
 
-The thumbprint must match the SHA-1 of the root; the SHA-256 fingerprint in §14 is the stronger
+The thumbprint must match the SHA-1 of the root; the SHA-256 fingerprint in §21 is the stronger
 check and can be confirmed with `certutil -dump rising-path-root-ca.crt`.
 
 **The real test is the application:** open the EXE. If it reaches the chat screen, TLS validated.
@@ -727,7 +956,7 @@ A test that only ever passes is not a test. The second command must fail.
 
 ---
 
-## 18. Renewal and reissue
+## 25. Renewal and reissue
 
 **The leaf expires 2027-10-12.** Put a reminder at least a month earlier. Renewal does not touch
 employee PCs — the root they trust is unchanged.
@@ -751,7 +980,7 @@ long-lived.
 
 ---
 
-## 19. If the server IP later changes
+## 26. If the server IP later changes
 
 Everything below preserves all data. Users, devices, direct chats, groups, messages, attachments,
 `joinedAt` boundaries and `_prisma_migrations` all survive — they live in `company_chat_db` and
@@ -782,7 +1011,7 @@ overrides the baked-in address. Useful for testing the new server before the fle
 
 ---
 
-## 20. No stable hostname is required for Stage A
+## 27. No stable hostname is required for Stage A
 
 Stage A deliberately uses an IP-based HTTPS URL. Router DNS and
 `chat.risingpath.internal` are **optional** and are not a prerequisite for the rollout.
@@ -790,11 +1019,11 @@ Stage A deliberately uses an IP-based HTTPS URL. Router DNS and
 The hostname remains available later at low cost: the Stage-A certificate already carries
 `chat.risingpath.internal` as a SAN, so adopting it needs only a DNS entry and an installer
 rebuild — no new certificate. Note that switching the EXE from an IP to a name is an origin change
-and carries the same re-enrollment consequence described in §19 Option B.
+and carries the same re-enrollment consequence described in §26 Option B.
 
 ---
 
-## 21. Reverse proxy
+## 28. Reverse proxy
 
 The draft lives at [`deploy/Caddyfile`](../deploy/Caddyfile) and is **not yet deployed**. It is
 secret-free: it names the certificate and key by path, and the key never enters the repository.
@@ -819,15 +1048,14 @@ The constraints it satisfies, each for a reason recorded above:
 
 ---
 
-## 22. Not done yet
+## 29. Not done yet
 
-Phases 10.2, 10.3 and 10.4 are complete: the certificate foundation, the production
-configuration and build, and the HTTPS bring-up with Windows services. Still ahead:
+Phases 10.2 to 10.5 are complete: the certificate foundation, the production configuration and
+build, the HTTPS bring-up with Windows services, and backup/restore plus the final installer.
+Still ahead:
 
 | Sub-phase | Work |
 |---|---|
-| 10.6 | Backup and restore, rehearsed **before** real data exists |
-| 10.7 | Final employee installer carrying `https://192.168.29.244` |
 | 10.8 | Stage-A deployment and smoke validation |
 | 10.9 | Real employee rollout validation |
 | 10.10 | Server-move rehearsal and written cutover runbook |
