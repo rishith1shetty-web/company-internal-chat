@@ -11,17 +11,15 @@
 
 import { PrismaPg } from '@prisma/adapter-pg';
 
+import { loadEnvironmentFile } from '../lib/config/env-file';
 import { parseDatabaseUrl } from '../lib/db/target';
 import { PrismaClient } from '../prisma/generated/client';
 import { TEST_PREFIXES } from './test-prefixes';
 
-
 async function main(): Promise<void> {
-  try {
-    process.loadEnvFile('.env');
-  } catch {
-    // A missing .env is not an error here; the guard below reports the real problem.
-  }
+  // `.env` by default; `ENV_FILE` selects the production configuration so this audit can verify
+  // the production database after a deployment or a restore.
+  loadEnvironmentFile();
 
   const target = parseDatabaseUrl(process.env['DATABASE_URL']);
 

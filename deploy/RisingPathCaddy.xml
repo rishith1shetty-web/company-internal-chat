@@ -1,0 +1,58 @@
+<service>
+  <!--
+    Caddy — TLS termination for the Stage-A production URL (Phase 10.4).
+
+    NO SECRETS IN THIS FILE. It names the certificate and key by path; the key itself lives in
+    C:\company-chat-pki\server and never enters the repository.
+
+    Installed by deploy/install-services.ps1, which must run elevated.
+  -->
+  <id>RisingPathCaddy</id>
+  <name>Rising Path Chat Reverse Proxy (Caddy)</name>
+  <description>Terminates HTTPS on :443 for https://192.168.29.244 and forwards to the chat application on 127.0.0.1:3000.</description>
+
+  <executable>C:\company-chat\caddy\caddy.exe</executable>
+  <arguments>run --config C:\dev\company-internal-chat\deploy\Caddyfile --adapter caddyfile</arguments>
+  <workingdirectory>C:\company-chat\caddy</workingdirectory>
+
+  <logpath>C:\company-chat\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+
+  <startmode>Automatic</startmode>
+
+  <!--
+    DELIBERATELY NO <depend> ON RisingPathChat.
+
+    Caddy starting first is the better failure mode: if the application is down, employees get a
+    502 from a working HTTPS endpoint, which is diagnosable. With a dependency they would instead
+    get connection refused, which looks identical to the server being switched off.
+  -->
+
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <resetfailure>1 hour</resetfailure>
+
+  <stoptimeout>15 sec</stoptimeout>
+
+  <!--
+    THE SERVICE ACCOUNT IS DELIBERATELY NOT SET HERE.
+
+    This service runs as the virtual account NT SERVICE\RisingPathCaddy - no password, no interactive
+    logon, no group membership, isolated from every other service on the machine.
+
+    It cannot be declared in this file. A virtual account's SID does not exist until the service
+    itself exists, so WinSW fails at install time with "No mapping between account names and
+    security IDs was done" (error 1332). deploy/install-services.ps1 therefore installs the
+    service first, switches the account with `sc.exe config`, and then ASSERTS the result with
+    `sc.exe qc` - because the failure mode of getting this wrong is a silent fall back to
+    LocalSystem, which is total privilege rather than least privilege.
+
+    It is granted read on the Caddyfile and on the Stage-A leaf certificate and key, and write on
+    the log directory. Nothing under C:\company-chat-pki\ca - the root CA is not the proxy's
+    business, and the root private key is not on this machine at all.
+  -->
+</service>

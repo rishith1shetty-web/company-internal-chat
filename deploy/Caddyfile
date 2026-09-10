@@ -1,0 +1,70 @@
+# =============================================================================================
+# Rising Path Recruiters Chat — Stage-A reverse proxy (Phase 10.2 draft; NOT yet deployed)
+# =============================================================================================
+#
+# Terminates TLS for the Stage-A production URL and forwards to the Node process on loopback.
+#
+# NO SECRETS IN THIS FILE. It names the certificate and key by path; the key itself lives in
+# C:\company-chat-pki\server and never enters the repository (see docs/20 §5).
+#
+# Start it only when Phase 10.4 says so:  caddy run --config deploy/Caddyfile
+# =============================================================================================
+{
+	# No ACME, ever. A public CA cannot issue for a private IP, and an unattended attempt to
+	# reach one would only produce confusing failures on a network with no internet path.
+	auto_https off
+
+	# Caddy's admin API is not used here and a listening socket that nothing needs is a
+	# listening socket that can be reached.
+	admin off
+}
+
+# The site address is the exact origin baked into the employee EXE. Port 443 is deliberate:
+# it keeps Origin and Host identical, which is what the Phase 9 write guard compares
+# (lib/http/request-guard.ts). On any other port both sides must carry it or every write fails.
+https://192.168.29.244:443 {
+	tls C:/company-chat-pki/server/stage-a.crt C:/company-chat-pki/server/stage-a.key
+
+	reverse_proxy 127.0.0.1:3000 {
+		# HOST IS PRESERVED, AND THERE IS DELIBERATELY NO `header_up Host` LINE HERE.
+		#
+		# Caddy forwards the incoming Host header verbatim by default, which is exactly what the
+		# Phase 9 Origin-vs-Host check needs (lib/http/request-guard.ts). An explicit
+		# `header_up Host {host}` looks safer but is worse: the `{host}` placeholder drops the
+		# port, so the moment this ever runs on anything but 443 the rewritten Host would no
+		# longer match the browser's Origin and EVERY WRITE would fail with
+		# CROSS_ORIGIN_FORBIDDEN while reads carried on working.
+		#
+		# Do not add one. If a future edit needs to be explicit, the faithful placeholder is
+		# {http.request.hostport}, never {host}.
+
+		# The real client address, overwritten rather than appended, so a caller cannot
+		# contribute to the header the network gate reads. With TRUSTED_PROXY_IPS=127.0.0.1 the
+		# application believes this header from this peer and nothing else
+		# (lib/net/policy.ts) — ALLOWED_NETWORKS stays authoritative on the real address.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		# WebSockets need no configuration here: Caddy upgrades /socket.io transparently.
+		# Request bodies are streamed with no size limit, so the application's own 500 MB
+		# MAX_FILE_SIZE stays the only ceiling — do NOT add a body limit here.
+	}
+
+	# NO CACHING. Pages are served with `Cache-Control: s-maxage=31536000`, which a shared
+	# cache would honour for a year, and /sounds/notification.wav relies on revalidating
+	# against its ETag so the file can be replaced server-side without rebuilding every EXE.
+	# Caddy caches nothing by default. Do not add a cache module.
+
+	log {
+		output file C:/company-chat/logs/caddy-access.log {
+			roll_size 10MiB
+			roll_keep 10
+		}
+	}
+}
+
+# Convenience for an administrator who types the address without a scheme. The employee EXE
+# always uses https:// directly and never relies on this.
+http://192.168.29.244:80 {
+	redir https://192.168.29.244{uri} permanent
+}

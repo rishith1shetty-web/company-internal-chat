@@ -13,13 +13,15 @@
 
 import { defineConfig } from 'prisma/config';
 
-try {
-  // Absent .env is not an error here: commands that genuinely need DATABASE_URL fail with their
-  // own clear message, and commands that do not (validate, format, generate) still work.
-  process.loadEnvFile('.env');
-} catch {
-  // No .env file on this machine. See README "Database setup".
-}
+import { loadEnvironmentFile } from './lib/config/env-file';
+
+// Absent .env is not an error here: commands that genuinely need DATABASE_URL fail with their
+// own clear message, and commands that do not (validate, format, generate) still work.
+//
+// `ENV_FILE` selects the production configuration instead, so `prisma migrate deploy` and
+// `prisma migrate status` on the company server read the production DATABASE_URL rather than a
+// development one that happens to sit in the same directory (docs/20-phase-10-deployment.md §3).
+loadEnvironmentFile();
 
 /*
  * Supplied only when it is actually set, so that `prisma validate`, `prisma format` and

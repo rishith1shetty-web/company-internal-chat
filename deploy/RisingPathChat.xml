@@ -1,0 +1,77 @@
+<service>
+  <!--
+    Rising Path Recruiters Chat — the production application service (Phase 10.4).
+
+    NO SECRETS IN THIS FILE. It names the production configuration by PATH; every secret stays in
+    C:\company-chat\production.env, which is ACL-restricted. This file is safe to keep in the
+    repository (docs/20-phase-10-deployment.md §3).
+
+    Installed by deploy/install-services.ps1, which must run elevated.
+  -->
+  <id>RisingPathChat</id>
+  <name>Rising Path Recruiters Chat</name>
+  <description>Company internal chat and file transfer. Serves 127.0.0.1:3000 behind the Caddy reverse proxy.</description>
+
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>dist\server.js</arguments>
+
+  <!--
+    THE WORKING DIRECTORY IS LOAD-BEARING, not cosmetic.
+
+    `dist\server.js` is relative, and so is the default `.env` lookup. A service started from
+    anywhere else would fail to find the application, and — worse, if it did — would fall back to
+    development configuration. UPLOAD_DIR is absolute precisely so it does not depend on this.
+  -->
+  <workingdirectory>C:\dev\company-internal-chat</workingdirectory>
+
+  <!--
+    The production configuration, selected explicitly. Without ENV_FILE the process would read the
+    development .env sitting in the same directory (lib/config/env-file.ts).
+
+    NODE_ENV is set here as well as in the file. Environment values win over the file, so the two
+    agreeing is belt and braces rather than a conflict.
+  -->
+  <env name="ENV_FILE" value="C:\company-chat\production.env" />
+  <env name="NODE_ENV" value="production" />
+
+  <logpath>C:\company-chat\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+
+  <startmode>Automatic</startmode>
+
+  <!--
+    PostgreSQL must be up first. Without this the service would start at boot, fail its first
+    query, and rely on the restart policy below to recover — which works, but logs a failure every
+    reboot and delays the first employee's sign-in.
+  -->
+  <depend>postgresql-x64-16</depend>
+
+  <!-- Escalating backoff: a transient fault recovers quickly, a persistent one does not spin. -->
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <resetfailure>1 hour</resetfailure>
+
+  <!-- The server installs SIGINT/SIGTERM handlers and drains connections; give it room. -->
+  <stoptimeout>25 sec</stoptimeout>
+
+  <!--
+    THE SERVICE ACCOUNT IS DELIBERATELY NOT SET HERE.
+
+    This service runs as the virtual account NT SERVICE\RisingPathChat - no password, no interactive
+    logon, no group membership, isolated from every other service on the machine.
+
+    It cannot be declared in this file. A virtual account's SID does not exist until the service
+    itself exists, so WinSW fails at install time with "No mapping between account names and
+    security IDs was done" (error 1332). deploy/install-services.ps1 therefore installs the
+    service first, switches the account with `sc.exe config`, and then ASSERTS the result with
+    `sc.exe qc` - because the failure mode of getting this wrong is a silent fall back to
+    LocalSystem, which is total privilege rather than least privilege.
+
+    It is granted exactly five things: read the repository, write .next, read production.env,
+    write uploads, write logs.
+  -->
+</service>

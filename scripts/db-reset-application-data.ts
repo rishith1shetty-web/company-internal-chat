@@ -17,6 +17,8 @@
  *   - It never touches `_prisma_migrations`. That table is not a Prisma model, so `deleteMany`
  *     cannot reach it — and the migration count is read before and after and compared, so the
  *     claim is proven rather than asserted.
+ *   - It refuses outright in a production environment, before reading or connecting to
+ *     anything at all. See safeguard 0.
  *   - It refuses any database but `company_chat_db`, through the same guard the application uses.
  *   - It refuses to run as a PostgreSQL superuser.
  *   - It does nothing at all unless BOTH an environment variable and a command-line flag say so.
@@ -37,6 +39,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { loadConfig } from '../lib/config/env';
+import { detectProduction, loadEnvironmentFile } from '../lib/config/env-file';
 import { parseDatabaseUrl } from '../lib/db/target';
 import { deleteStoredFile } from '../lib/files/storage';
 import { PrismaClient } from '../prisma/generated/client';
@@ -85,10 +88,33 @@ function fail(text: string): never {
 }
 
 async function main(): Promise<void> {
-  try {
-    process.loadEnvFile('.env');
-  } catch {
-    // A missing .env is not an error here; the target guard below reports the real problem.
+  // `.env` by default; `ENV_FILE` selects the production configuration. Loaded FIRST so that the
+  // production check below sees whatever the file itself sets, not merely the shell.
+  loadEnvironmentFile();
+
+  /* --------------------------------------------------- safeguard 0: never against production */
+
+  /*
+   * THE FIRST THING THAT HAPPENS, before the confirmations are even evaluated and before a
+   * connection is opened.
+   *
+   * Once the office rollout begins, every row in `company_chat_db` is real company data and this
+   * utility has no legitimate use against it. It existed to clear development leftovers once, and
+   * the window for that has closed. A dry run is refused too: there is nothing here an operator
+   * on a production server should be running, not even to look.
+   *
+   * Note the ordering. Because this runs before `armed` is computed, the refusal cannot be
+   * bypassed by supplying the confirmations — they are never read.
+   */
+  const production = detectProduction();
+  if (production.production) {
+    fail(
+      '\n  REFUSING TO RUN — this is a production environment.\n' +
+        production.reasons.map((reason) => `    · ${reason}`).join('\n') +
+        '\n\n  This utility erases every user, device, conversation, message and attachment.\n' +
+        '  It is a one-time development tool and must never be run against company data\n' +
+        '  (docs/20-phase-10-deployment.md §4). Nothing was read and nothing was changed.\n',
+    );
   }
 
   const armed =

@@ -20,6 +20,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import next from 'next';
 
 import { assertNetworkPolicyConfigured, loadConfig, ConfigError } from './lib/config/env';
+import { loadEnvironmentFile } from './lib/config/env-file';
 import { disconnectDb, getDb } from './lib/db/prisma';
 import { createLogger, describeError, type Logger } from './lib/logging/logger';
 import { createNetworkGate } from './lib/net/gate';
@@ -65,17 +66,16 @@ const RATE_LIMITS: Record<GuardedEndpoint, RateLimitRule> = {
 const THROTTLE_LOG_INTERVAL_MS = 60_000;
 
 async function main(): Promise<void> {
-  // Load `.env` before reading configuration.
+  // Load the environment file before reading configuration.
   //
   // Next.js loads env files for the application itself, but it does so during `app.prepare()` —
   // after this process has already read PORT, APP_URL and DATABASE_URL. Loading here means the
-  // custom server honours `.env` too, which it previously did not. Node's built-in loader is
-  // used rather than adding `dotenv` (CLAUDE.md §3); a missing file is normal and not an error.
-  try {
-    process.loadEnvFile('.env');
-  } catch {
-    // No .env on this machine: every setting has a safe default, and the database is optional.
-  }
+  // custom server honours it too, which it previously did not.
+  //
+  // WHICH file is `ENV_FILE`'s decision (lib/config/env-file.ts): unset means `.env` exactly as
+  // before, while production sets it to the server's own configuration file so the development
+  // `.env` sitting in the same directory cannot contribute a single value.
+  const envFile = loadEnvironmentFile();
 
   const config = loadConfig();
 
@@ -293,6 +293,10 @@ async function main(): Promise<void> {
     appUrl: config.appUrl,
     nodeEnv: config.nodeEnv,
     mode: config.isDevelopment ? 'development' : 'production',
+    // Which configuration actually won, and where uploads land. Neither is a secret, and both
+    // are the first things to check when a deployed service behaves unexpectedly.
+    envFile: envFile.loaded ? envFile.path : 'none (defaults only)',
+    uploadDir: config.uploadDir,
     // Redacted: role, host, port and database name only, never the password (CLAUDE.md §14).
     // No connection is opened here — the client connects lazily on first use.
     database: config.databaseTarget ?? 'not configured',

@@ -31,6 +31,7 @@ import { parseDatabaseUrl } from '../lib/db/target';
 import { deleteStoredFile } from '../lib/files/storage';
 import { PrismaClient } from '../prisma/generated/client';
 import { TEST_PREFIXES, isTestPrefix } from './test-prefixes';
+import { loadEnvironmentFile } from '../lib/config/env-file';
 
 /** The desktop client's harness, which is what this is normally run for. */
 const DEFAULT_PREFIX = 'zz-desk-';
@@ -41,11 +42,10 @@ function readArgument(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  try {
-    process.loadEnvFile('.env');
-  } catch {
-    // A missing .env is not an error here; the target guard below reports the real problem.
-  }
+  // `.env` by default; `ENV_FILE` selects the production configuration so this can clean up
+  // after a verification run against the deployed server - including the files, which live
+  // under the production UPLOAD_DIR rather than the development one.
+  loadEnvironmentFile();
 
   const dryRun = process.argv.includes('--dry-run');
   const prefix = readArgument('prefix') ?? DEFAULT_PREFIX;
