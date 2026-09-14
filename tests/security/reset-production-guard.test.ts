@@ -25,12 +25,22 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { PRODUCTION_UPLOAD_DIR } from '../../lib/db/storage-pairing';
+
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = 'scripts/db-reset-application-data.ts';
 
 /** The banner the script prints once it has started work. Its ABSENCE is the real assertion. */
 const WORK_STARTED = 'ERASE ALL APPLICATION DATA';
 const REFUSAL = 'REFUSING TO RUN';
+
+/*
+ * The script now has more than one reason to refuse: safeguard 0 (production) and safeguard 1a
+ * (the database and the file store disagree). Tests for one must not be satisfied by the other
+ * firing, so each has its own needle.
+ */
+const PRODUCTION_REFUSAL = 'this is a production environment';
+const PAIRING_REFUSAL = 'the database and the file store do not match';
 
 interface ResetRun {
   readonly status: number | null;
@@ -51,6 +61,14 @@ function runReset(extraEnv: Record<string, string>): Promise<ResetRun> {
   // Cleared BEFORE the caller's values are applied, so the suite behaves identically whatever the
   // developer happens to have exported, while a case that deliberately sets it still can.
   delete env['CONFIRM_ERASE_ALL_DATA'];
+
+  /*
+   * UPLOAD_DIR is cleared too, and that one is not optional: `tests/setup-env.ts` points it at a
+   * fresh temporary directory for the whole vitest process, and the child would inherit it. The
+   * storage-pairing cases below are precisely about which directory the script resolves, so they
+   * have to start from nothing and set it themselves.
+   */
+  delete env['UPLOAD_DIR'];
   Object.assign(env, extraEnv);
 
   /*
@@ -137,9 +155,66 @@ describe('the data reset utility refuses production', () => {
      * This asserts only the absence of the production refusal. Whatever the script does next
      * (a dry run against a configured database, or a complaint about an unconfigured one) is not
      * this test's business.
+     *
+     * It checks for the PRODUCTION refusal specifically, not for the word "REFUSING". Under the
+     * developer's own `.env` the script now stops at safeguard 1a instead — that file names the
+     * production database and sets no UPLOAD_DIR — and a control that accepted any refusal at all
+     * would silently start passing for the wrong reason.
      */
     const run = await runReset({ NODE_ENV: 'test' });
 
-    expect(run.combined).not.toContain(REFUSAL);
+    expect(run.combined).not.toContain(PRODUCTION_REFUSAL);
+  }, 120_000);
+});
+
+describe('the data reset utility refuses a mismatched database and file store', () => {
+  /*
+   * WHY THIS GUARD EXISTS. The rows and the files are two halves of one record, configured
+   * independently. The development `.env` sets DATABASE_URL to the production database and no
+   * UPLOAD_DIR at all, so storage falls back to `./var/uploads` in the repository. Under that
+   * pair the script would delete every attachment row, look for the files in the wrong
+   * directory, unlink nothing, and report success — leaving every real upload orphaned.
+   *
+   * `tests/db/storage-pairing.test.ts` covers the rule. These cover the wiring: that this
+   * executable consults it, and does so before it connects to anything.
+   */
+
+  it('refuses the production database with the development fallback store', async () => {
+    // No UPLOAD_DIR: exactly what a developer gets from `.env`, which is the dangerous case.
+    const run = await runReset({ NODE_ENV: 'test' });
+
+    expect(run.status).not.toBe(0);
+    expect(run.combined).toContain(PAIRING_REFUSAL);
+    expect(run.combined).toContain('pair              INVALID');
+
+    // Stopped before the client was constructed, so nothing was connected to or read.
+    expect(run.combined).not.toContain(WORK_STARTED);
+  }, 120_000);
+
+  it('refuses whether or not a confirmation is supplied', async () => {
+    /*
+     * Ordering again. Safeguard 1a sits above the deletion logic, so arming cannot buy past it.
+     * The confirmation VARIABLE is set here; the FLAG is not (see `runReset`), so this exercises
+     * the ordering while remaining incapable of deleting a row.
+     */
+    const run = await runReset({ NODE_ENV: 'test', CONFIRM_ERASE_ALL_DATA: 'yes' });
+
+    expect(run.status).not.toBe(0);
+    expect(run.combined).toContain(PAIRING_REFUSAL);
+    expect(run.combined).not.toContain(WORK_STARTED);
+  }, 120_000);
+
+  it('does NOT refuse a matched pair, so the guard is specific rather than blanket', async () => {
+    /*
+     * The control for the guard above, and the positive half of requirement: the production
+     * database with the production store is a valid pair and must be allowed through.
+     *
+     * This one really does reach the dry run, which is read-only — the arming flag is never
+     * passed by this harness — so it also proves the "pair ... VALID" line reaches an operator.
+     */
+    const run = await runReset({ NODE_ENV: 'test', UPLOAD_DIR: PRODUCTION_UPLOAD_DIR });
+
+    expect(run.combined).not.toContain(PAIRING_REFUSAL);
+    expect(run.combined).toContain('VALID');
   }, 120_000);
 });

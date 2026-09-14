@@ -40,6 +40,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 import { loadConfig } from '../lib/config/env';
 import { detectProduction, loadEnvironmentFile } from '../lib/config/env-file';
+import { checkStoragePairing } from '../lib/db/storage-pairing';
 import { parseDatabaseUrl } from '../lib/db/target';
 import { deleteStoredFile } from '../lib/files/storage';
 import { PrismaClient } from '../prisma/generated/client';
@@ -127,6 +128,37 @@ async function main(): Promise<void> {
   const target = parseDatabaseUrl(process.env['DATABASE_URL']);
   const config = loadConfig();
 
+  /* ------------------------------ safeguard 1a: the database and the file store must agree */
+
+  /*
+   * BEFORE THE CLIENT IS EVEN CONSTRUCTED, and long before anything is deleted.
+   *
+   * Safeguard 0 asks "is this production?" and safeguard 1 asks "is this the right database?".
+   * Neither asks whether the two halves of a chat record — the rows and the files — came from
+   * the same environment file. They can differ: the development `.env` names the production
+   * database and sets no UPLOAD_DIR, so storage silently falls back to `./var/uploads` in the
+   * repository while the rows are the company's real ones (lib/db/storage-pairing.ts).
+   *
+   * That combination is the one this script must never run under. It would delete every
+   * attachment row, unlink nothing — the files are elsewhere — and report success, leaving the
+   * real uploads orphaned on disk where no later sweep would find them.
+   *
+   * Refused in BOTH directions, and in dry-run mode too. A dry run under a mismatched pair
+   * prints a file list from the wrong directory, which is exactly the reassurance an operator
+   * should not be given before arming this.
+   */
+  const pairing = checkStoragePairing(target.database, config.uploadDir);
+  if (!pairing.valid) {
+    fail(
+      '\n  REFUSING TO RUN — the database and the file store do not match.\n' +
+        `    database          ${pairing.database}\n` +
+        `    upload directory  ${pairing.uploadDir}\n` +
+        '    pair              INVALID\n\n' +
+        `  ${pairing.reason}\n\n` +
+        '  Nothing was read and nothing was changed.\n',
+    );
+  }
+
   const db = new PrismaClient({
     adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL'] }),
   });
@@ -136,7 +168,11 @@ async function main(): Promise<void> {
     out('  ERASE ALL APPLICATION DATA');
     out('  ─────────────────────────────────────────────────────────────────────────────');
     out(`  database    ${target.redacted}`);
-    out(`  storage     ${config.uploadDir}`);
+    out(`  storage     ${pairing.uploadDir}`);
+    // Printed on every run, valid or not. An operator reading a dry run should be able to see
+    // which database and which directory it actually resolved, and that they belong together,
+    // without having to infer it from the absence of a refusal.
+    out(`  pair        ${pairing.database} + this storage root — VALID`);
     out(`  mode        ${armed ? 'ARMED — data will be deleted' : 'DRY RUN — nothing will change'}`);
     out();
 
