@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
+
+import { ComposerContextMenu } from '@/components/chat/ComposerContextMenu';
 
 import { Button, IconButton } from '@/components/ui/Button';
 import {
@@ -13,6 +15,7 @@ import {
   ReplyIcon,
   SendIcon,
 } from '@/components/ui/icons';
+import { canReadClipboard, pasteIntoComposer } from '@/lib/chat/clipboard';
 import { formatFileSize } from '@/lib/chat/format';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
@@ -72,6 +75,24 @@ export function MessageComposer({
   const [fileError, setFileError] = useState<string | null>(null);
   /** True while a save is in flight, so Save cannot be pressed twice. */
   const [saving, setSaving] = useState(false);
+  /**
+   * The right-click menu inside the text field, and what the caret was doing when it opened.
+   *
+   * The selection is captured HERE, at right-click time, rather than read when Paste is chosen.
+   * Opening the menu moves focus to its first item, so by the time Paste is pressed the field is
+   * no longer focused — and capturing at the moment of the gesture is both accurate and immune to
+   * anything that happens in between.
+   */
+  const [composerMenu, setComposerMenu] = useState<{
+    x: number;
+    y: number;
+    selectionStart: number;
+    selectionEnd: number;
+  } | null>(null);
+  /** Said out loud only when a paste could not happen. Cleared on the next attempt. */
+  const [pasteError, setPasteError] = useState<string | null>(null);
+  /** Where the caret belongs once a pasted value has been rendered. */
+  const pendingCursor = useRef<number | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -139,6 +160,81 @@ export function MessageComposer({
     field.style.height = 'auto';
     field.style.height = `${Math.min(field.scrollHeight, 160)}px`;
   }, [body]);
+
+  /*
+   * Puts the caret back after a paste has been rendered.
+   *
+   * A LAYOUT effect, so it runs before the browser paints: setting the selection after paint
+   * makes the caret visibly jump to the end and back. The field is focused explicitly rather than
+   * relying on the closing menu to restore it, so the caret lands whether the paste came from the
+   * menu or from anywhere else.
+   */
+  useLayoutEffect(() => {
+    const cursor = pendingCursor.current;
+    if (cursor === null) return;
+    pendingCursor.current = null;
+
+    const field = textAreaRef.current;
+    if (!field) return;
+    field.focus();
+    field.setSelectionRange(cursor, cursor);
+  }, [body]);
+
+  /**
+   * Reads the clipboard and inserts it at the caret.
+   *
+   * Only ever reached from the menu. Native Ctrl+V does not come through here at all — it is a
+   * trusted user action that carries its own data, needs no permission, and is handled by the
+   * browser writing into the field and React seeing an ordinary change event. Nothing in this
+   * component intercepts `paste`, so the keyboard keeps working exactly as it did.
+   *
+   * THE THREE OUTCOMES are kept apart on purpose:
+   *   text     → inserted
+   *   empty    → nothing happens, silently; there was nothing to paste
+   *   refused  → said out loud, with the way that does work
+   *
+   * The refusal is the desktop client's case. Its session denies every permission, so the page
+   * may not read the clipboard (lib/chat/clipboard.ts) — telling the employee to press Ctrl+V is
+   * both true and immediately useful, and is far better than a menu item that appears to do
+   * nothing.
+   *
+   * Reply and edit mode are untouched: this writes to the same `body` the field already shows, so
+   * pasting while replying composes a reply and pasting while editing edits. Neither mode is
+   * cancelled, because nothing here cancels anything.
+   */
+  const pasteFromClipboard = useCallback(
+    async (selection: { selectionStart: number; selectionEnd: number }) => {
+      setPasteError(null);
+
+      const field = textAreaRef.current;
+      const outcome = await pasteIntoComposer({ value: field?.value ?? '', ...selection });
+
+      if (outcome.kind === 'refused') {
+        setPasteError('This application cannot read the clipboard. Press Ctrl+V to paste.');
+        return;
+      }
+      // 'empty': the clipboard held nothing. Nothing to say and nothing to do.
+      if (outcome.kind !== 'inserted') return;
+
+      setBody(outcome.value);
+      pendingCursor.current = outcome.cursor;
+    },
+    [],
+  );
+
+  /** Right-click inside the field: our menu instead of nothing (Electron) or the native one. */
+  const openComposerMenu = useCallback((event: ReactMouseEvent<HTMLTextAreaElement>) => {
+    const field = event.currentTarget;
+    event.preventDefault();
+    setComposerMenu({
+      x: event.clientX,
+      y: event.clientY,
+      selectionStart: field.selectionStart,
+      selectionEnd: field.selectionEnd,
+    });
+  }, []);
+
+  const closeComposerMenu = useCallback(() => setComposerMenu(null), []);
 
   const trimmed = body.trim();
   const tooLong = body.length > MAX_MESSAGE_LENGTH;
@@ -342,6 +438,17 @@ export function MessageComposer({
         ) : null}
 
         {/*
+          A paste that could not happen. `role="status"` rather than `alert`: it answers something
+          the employee just did and tells them the way that works, which is information rather
+          than an interruption.
+        */}
+        {pasteError ? (
+          <p className="mb-2 text-sm text-ink-muted" role="status">
+            {pasteError}
+          </p>
+        ) : null}
+
+        {/*
           The whole row is the field, not just the textarea inside it: focus lights up the
           container so the paperclip and Send read as part of one control rather than three
           controls that happen to be adjacent.
@@ -378,6 +485,7 @@ export function MessageComposer({
             value={body}
             onChange={(event) => setBody(event.target.value)}
             onKeyDown={onKeyDown}
+            onContextMenu={openComposerMenu}
             placeholder={
               editing
                 ? 'Edit your message'
@@ -433,6 +541,31 @@ export function MessageComposer({
           ) : null}
         </div>
       </div>
+
+      {/*
+        Fixed to the viewport and rendered last, so it is never clipped by the composer's own
+        box. `useAnchoredMenu` closes it on Escape, on a click elsewhere, on a right-click
+        elsewhere, on a scroll and on a resize — the right-click rule being what guarantees this
+        and the message menu are never open at the same time.
+      */}
+      {composerMenu ? (
+        <ComposerContextMenu
+          anchor={{ x: composerMenu.x, y: composerMenu.y }}
+          onPasteSelected={
+            // Null only when the browser has no clipboard read API at all — an insecure origin,
+            // or a browser too old for it. A PRESENT-BUT-REFUSED API (the desktop client) stays
+            // enabled and explains itself when pressed, which is the more useful of the two.
+            canReadClipboard()
+              ? () =>
+                  void pasteFromClipboard({
+                    selectionStart: composerMenu.selectionStart,
+                    selectionEnd: composerMenu.selectionEnd,
+                  })
+              : null
+          }
+          onClose={closeComposerMenu}
+        />
+      ) : null}
     </form>
   );
 }

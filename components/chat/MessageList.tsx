@@ -10,6 +10,7 @@ import {
   type MessageMenuAction,
 } from '@/components/chat/MessageContextMenu';
 import { ChatIcon, ForwardIcon, PinIcon } from '@/components/ui/icons';
+import { copyTextFor, writeClipboardText } from '@/lib/chat/clipboard';
 import { formatDayLabel, formatFullTimestamp, formatTime } from '@/lib/chat/format';
 import type { ChatMessage, PendingUpload, UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
@@ -87,27 +88,37 @@ export function MessageList({
 
   /** Which message was right-clicked, and where. Null when no menu is open. */
   const [menu, setMenu] = useState<{ message: ChatMessage; x: number; y: number } | null>(null);
-  /** A short "Copied" confirmation. Local, transient, and never a server round trip. */
-  const [copied, setCopied] = useState(false);
+  /**
+   * The outcome of the last copy, shown briefly. Local, transient, never a server round trip.
+   *
+   * Three states rather than a boolean, because "it failed" must be distinguishable from "nothing
+   * has happened yet" — a copy that did not happen may not be reported as one that did.
+   */
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
   /*
-   * Copy is entirely client-side (requirement 3): the text for a text message, the caption for a
-   * file with one, and otherwise the filename — never the bytes, which is why an attachment-only
-   * message copies its name rather than attempting a binary clipboard write.
+   * Copy is entirely client-side: no request, no socket event, no unread change, no notification.
+   *
+   * WHAT IT COPIES is decided by `copyTextFor` — the text, or a file's caption, or otherwise its
+   * filename. Never the bytes.
+   *
+   * WHETHER IT WORKED is decided by `writeClipboardText`, which tries the modern API and falls
+   * back to the legacy one when it is missing or refused. That fallback is the fix: inside the
+   * desktop client the async clipboard API is denied outright by the session's own permission
+   * handler, and the previous implementation swallowed the rejection — so Copy silently did
+   * nothing for every employee (lib/chat/clipboard.ts).
+   *
+   * The result is reported honestly. A failed copy says so instead of claiming "Copied".
    */
   const copyMessage = useCallback(async (message: ChatMessage) => {
-    const text = message.body?.trim() || message.attachment?.filename || '';
+    const text = copyTextFor(message);
     if (!text) return;
 
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // A browser that refuses clipboard access is not an error worth interrupting anybody for.
-    }
+    const written = await writeClipboardText(text);
+    setCopyState(written ? 'copied' : 'failed');
+    window.setTimeout(() => setCopyState('idle'), written ? 1600 : 2600);
   }, []);
 
   // Follow the conversation: jump to the newest message when the conversation changes, and keep
@@ -220,15 +231,23 @@ export function MessageList({
       ) : null}
 
       {/*
-        The copy confirmation. `role="status"` rather than an alert: it is reassurance, not
-        something that should interrupt a screen reader mid-sentence.
+        The copy result.
+
+        `role="status"` rather than an alert even for the failure: it is the answer to something
+        the employee just did, not an interruption, and a screen reader should finish its sentence
+        first. The failure lingers a little longer than the success, because it asks the reader to
+        do something about it rather than just confirming what they expected.
       */}
-      {copied ? (
+      {copyState !== 'idle' ? (
         <div
           role="status"
-          className="pointer-events-none fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-white shadow-lg"
+          className={cn(
+            'pointer-events-none fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-full',
+            'px-3 py-1.5 text-xs font-medium shadow-lg',
+            copyState === 'copied' ? 'bg-ink text-white' : 'bg-danger text-white',
+          )}
         >
-          Copied
+          {copyState === 'copied' ? 'Copied' : 'Could not copy — try Ctrl+C'}
         </div>
       ) : null}
     </div>
