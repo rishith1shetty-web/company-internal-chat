@@ -69,6 +69,44 @@ export interface AttachmentWire {
   createdAt: string;
 }
 
+/**
+ * One emoji's worth of reactions on a message, already aggregated.
+ *
+ * `userIds` rather than a `mine` flag, deliberately. A `mine` flag would have to be computed per
+ * reader, which would force the server to serialize a separate copy of every broadcast for every
+ * member. The reader knows its own id, so it can answer "did I react?" itself — and the ids are
+ * conversation members whose names the client already holds, so nothing new is disclosed.
+ */
+export interface ReactionWire {
+  emoji: string;
+  count: number;
+  /** Everyone who reacted with this emoji. Always conversation members. */
+  userIds: string[];
+}
+
+/**
+ * The message a reply points at, as much of it as this reader is entitled to see.
+ *
+ * `unavailable` is NOT the same as `deleted`, and conflating them would be a disclosure:
+ *
+ *   - `deleted` — the original was deleted for everyone. Everybody sees "This message was
+ *     deleted", which is a fact about the conversation.
+ *   - `unavailable` — the original is outside this reader's D-03 window, or was hidden by them.
+ *     They are told nothing about it at all, not even that it was deleted.
+ */
+export interface ReplyPreviewWire {
+  id: string;
+  senderId: string | null;
+  /** Truncated for display. Null for a file with no caption, or when deleted/unavailable. */
+  body: string | null;
+  /** Set when the original carried a file, so the preview can name it. */
+  attachmentFilename: string | null;
+  /** The original was deleted for everyone. */
+  deleted: boolean;
+  /** The original is outside this reader's visible window. Nothing else is populated. */
+  unavailable: boolean;
+}
+
 /** A message as it travels to a browser. */
 export interface MessageWire {
   id: string;
@@ -76,10 +114,21 @@ export interface MessageWire {
   senderId: string | null;
   clientMessageId: string;
   type: MessageKindWire;
+  /** Null once deleted for everyone — the body is cleared in the database, not just hidden. */
   body: string | null;
   createdAt: string;
-  /** Present on `FILE` messages. Null on every other kind. */
+  /** Present on `FILE` messages. Null on every other kind, and null once deleted for everyone. */
   attachment: AttachmentWire | null;
+  /** Set when this message is a reply. Resolved per reader (D-03). */
+  replyTo: ReplyPreviewWire | null;
+  /** True when this message was forwarded from another conversation. */
+  isForwarded: boolean;
+  /** ISO-8601 UTC when pinned in this conversation; null when not pinned. */
+  pinnedAt: string | null;
+  /** ISO-8601 UTC when deleted for everyone. Non-null means render the tombstone. */
+  deletedAt: string | null;
+  /** Aggregated reactions. Empty when there are none. */
+  reactions: ReactionWire[];
 }
 
 export interface PresenceWire {
@@ -250,3 +299,39 @@ export interface ReadReceiptWire {
 export interface DirectoryWire {
   users: UserWire[];
 }
+
+/* ------------------------------------------------------------------------------------------- */
+/* Message actions (Batch 1)                                                                     */
+/* ------------------------------------------------------------------------------------------- */
+
+/**
+ * The answer to every single-message mutation: react, pin, unpin, delete.
+ *
+ * Always the whole message as the caller may now see it, rather than a diff. One shape means the
+ * client has one code path for "replace this message in the list", and a client that missed an
+ * earlier event still converges on the correct state instead of applying a delta to a stale row.
+ */
+export interface MessageMutationWire {
+  message: MessageWire;
+}
+
+/** `POST /api/messages/:id/forward` — the messages created in the destination conversations. */
+export interface ForwardResultWire {
+  /** One per destination that accepted the forward, in the order they were requested. */
+  messages: MessageWire[];
+  /**
+   * Destinations that were refused, and why — so the interface can say "sent to 2 of 3" rather
+   * than failing the whole operation because one group was left.
+   */
+  failures: { conversationId: string; reason: 'FORBIDDEN' | 'UNAVAILABLE' | 'FAILED' }[];
+}
+
+/** `GET /api/conversations/:id/pins` — pinned messages, newest pin first. */
+export interface PinnedMessagesWire {
+  messages: MessageWire[];
+}
+
+/** The emoji the server accepts. The client renders this set in the picker. */
+export const REACTION_EMOJI = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
+
+export type ReactionEmoji = (typeof REACTION_EMOJI)[number];

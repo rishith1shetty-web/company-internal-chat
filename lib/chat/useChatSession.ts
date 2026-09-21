@@ -23,7 +23,7 @@
  * assignment is an administrator's job (docs/12-admin-device-identity.md).
  */
 
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import {
   ApiError,
@@ -38,6 +38,13 @@ import {
   markRead,
   removeGroupMember as requestRemoveMember,
   startDirectConversation as requestDirectConversation,
+  clearReaction as clearMessageReaction,
+  deleteMessageForEveryone as removeMessageForEveryone,
+  deleteMessageForMe as hideMessage,
+  fetchPinnedMessages,
+  forwardMessage as sendForward,
+  setMessagePinned,
+  setReaction as setMessageReaction,
 } from '@/lib/chat/api';
 import {
   chatReducer,
@@ -78,6 +85,24 @@ export interface ChatSession {
   dismissUpload(clientMessageId: string): void;
   retryMessage(message: ChatMessage): void;
   loadOlderMessages(): void;
+  /* ------------------------------------------------ message actions (Batch 1) --------------- */
+  /** The message the composer is replying to, or null. Purely local until the reply is sent. */
+  replyTarget: ChatMessage | null;
+  beginReply(message: ChatMessage): void;
+  cancelReply(): void;
+  /**
+   * Adds, changes or removes this user's reaction — one call, because one person has at most one
+   * reaction per message. Tapping the emoji already chosen removes it.
+   */
+  toggleReaction(message: ChatMessage, emoji: string): void;
+  /** Pins or unpins for the whole conversation, from the message's current state. */
+  togglePin(message: ChatMessage): void;
+  /** Hides a message for this user only. */
+  deleteForMe(message: ChatMessage): void;
+  /** Replaces a message with a tombstone for everyone. The server allows only its sender. */
+  deleteForEveryone(message: ChatMessage): void;
+  /** Copies a message into other conversations. Returns how many destinations accepted. */
+  forwardTo(message: ChatMessage, conversationIds: string[]): Promise<number>;
   searchDirectory(term: string): void;
   setSearchTerm(term: string): void;
   dismissNotice(): void;
@@ -329,6 +354,34 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, []);
 
+  /**
+   * Reads the conversation's pinned messages.
+   *
+   * Fetched rather than derived from the loaded history, because a pin can be far outside the
+   * pages on screen. Afterwards the reducer keeps the list current from `message:updated`, so
+   * this runs once per conversation open and not on every pin.
+   *
+   * Silent on failure, like the file panel: the banner is a convenience beside a conversation
+   * that works.
+   */
+  const loadPins = useCallback(async (conversationId: string) => {
+    try {
+      const data = await fetchPinnedMessages(conversationId);
+      dispatch({ type: 'pins-loaded', conversationId, messages: data.messages });
+    } catch {
+      dispatch({ type: 'pins-loaded', conversationId, messages: [] });
+    }
+  }, []);
+
+  /**
+   * The message the composer is replying to.
+   *
+   * Local component state, not reducer state: it is a property of this window's composer, nothing
+   * is persisted until the reply is actually sent, and a second tab replying to something else is
+   * not a conflict to reconcile.
+   */
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+
   const syncPresence = useCallback(async () => {
     const response = await socketRef.current?.syncPresence();
     if (response?.ok) dispatch({ type: 'presence-changed', entries: response.data });
@@ -417,6 +470,23 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
           await syncPresence();
         })();
+      },
+
+      /**
+       * A reaction, a pin, or a delete-for-everyone on a message that already exists.
+       *
+       * `announce` is deliberately NOT called. This is a visual update, not an arrival: somebody
+       * reacting to a week-old message must not play a sound, raise a desktop notification or
+       * mark a conversation unread. The reducer case is equally careful — it replaces the message
+       * and leaves the unread count alone.
+       */
+      onMessageUpdated(wire) {
+        dispatch({ type: 'message-updated', message: wire });
+      },
+
+      /** This user hid a message for themselves, here or in another of their windows. */
+      onMessageHidden({ conversationId, messageId }) {
+        dispatch({ type: 'message-hidden', conversationId, messageId });
       },
 
       onMessage(wire) {
@@ -533,8 +603,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       // reconnection old. The merge in the reducer keeps anything still sending.
       void loadHistory(conversationId);
       void loadAttachments(conversationId);
+      void loadPins(conversationId);
+      // A reply belongs to the conversation it was started in. Carrying it into another one would
+      // quote a message that is not there.
+      setReplyTarget(null);
     },
-    [loadAttachments, loadHistory],
+    [loadAttachments, loadHistory, loadPins],
   );
 
   const startDirectConversation = useCallback(
@@ -651,7 +725,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
    * not an identity.
    */
   const deliver = useCallback(
-    async (conversationId: string, body: string, clientMessageId: string) => {
+    async (
+      conversationId: string,
+      body: string,
+      clientMessageId: string,
+      replyToId?: string | undefined,
+    ) => {
       const socket = socketRef.current;
 
       if (!socket) {
@@ -664,7 +743,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         return;
       }
 
-      const ack = await socket.sendMessage({ conversationId, body, clientMessageId });
+      const ack = await socket.sendMessage({ conversationId, body, clientMessageId, replyToId });
 
       if (ack.ok) {
         dispatch({ type: 'message-acknowledged', clientMessageId, message: ack.data });
@@ -688,6 +767,13 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       if (!conversationId || trimmed.length === 0) return;
 
       const clientMessageId = newClientMessageId();
+      /*
+       * Captured before the optimistic dispatch and cleared immediately, so a second send cannot
+       * quote the same message again and a slow network cannot leave the banner up over a reply
+       * that has already gone.
+       */
+      const reply = replyTarget && replyTarget.conversationId === conversationId ? replyTarget : null;
+      setReplyTarget(null);
 
       dispatch({
         type: 'message-queued',
@@ -695,11 +781,21 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         clientMessageId,
         body: trimmed,
         now: new Date().toISOString(),
+        replyTo: reply
+          ? {
+              id: reply.id,
+              senderId: reply.senderId,
+              body: reply.body,
+              attachmentFilename: reply.attachment?.filename ?? null,
+              deleted: reply.deletedAt !== null,
+              unavailable: false,
+            }
+          : null,
       });
 
-      void deliver(conversationId, trimmed, clientMessageId);
+      void deliver(conversationId, trimmed, clientMessageId, reply?.id);
     },
-    [deliver],
+    [deliver, replyTarget],
   );
 
   /**
@@ -870,8 +966,147 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     dispatch({ type: 'notice', message: null });
   }, []);
 
+  /* ----------------------------------------------------------------------------------------- */
+  /* Message actions (Batch 1)                                                                   */
+  /* ----------------------------------------------------------------------------------------- */
+
+  const beginReply = useCallback((message: ChatMessage) => {
+    // A tombstone has nothing to quote.
+    if (message.deletedAt !== null) return;
+    setReplyTarget(message);
+  }, []);
+
+  const cancelReply = useCallback(() => setReplyTarget(null), []);
+
+  /**
+   * Adds, changes or removes this user's reaction.
+   *
+   * The response is applied locally as well as broadcast, so the actor's own window updates even
+   * if their socket is briefly down — the server is still the authority, and a reconnection
+   * re-reads history regardless.
+   */
+  const toggleReaction = useCallback(
+    (message: ChatMessage, emoji: string) => {
+      const mine = currentUserId;
+      if (!mine) return;
+
+      const alreadyMine = message.reactions.some(
+        (reaction) => reaction.emoji === emoji && reaction.userIds.includes(mine),
+      );
+
+      void (async () => {
+        try {
+          const result = alreadyMine
+            ? await clearMessageReaction(message.id)
+            : await setMessageReaction(message.id, emoji);
+          dispatch({ type: 'message-updated', message: result.message });
+        } catch (error) {
+          handleFailure(error, 'That reaction could not be saved.');
+        }
+      })();
+    },
+    [currentUserId, handleFailure],
+  );
+
+  const togglePin = useCallback(
+    (message: ChatMessage) => {
+      void (async () => {
+        try {
+          const result = await setMessagePinned(message.id, message.pinnedAt === null);
+          dispatch({ type: 'message-updated', message: result.message });
+        } catch (error) {
+          handleFailure(error, 'That message could not be pinned.');
+        }
+      })();
+    },
+    [handleFailure],
+  );
+
+  const deleteForMe = useCallback(
+    (message: ChatMessage) => {
+      void (async () => {
+        try {
+          await hideMessage(message.id);
+          dispatch({
+            type: 'message-hidden',
+            conversationId: message.conversationId,
+            messageId: message.id,
+          });
+        } catch (error) {
+          handleFailure(error, 'That message could not be removed.');
+        }
+      })();
+    },
+    [handleFailure],
+  );
+
+  const deleteForEveryone = useCallback(
+    (message: ChatMessage) => {
+      void (async () => {
+        try {
+          const result = await removeMessageForEveryone(message.id);
+          dispatch({ type: 'message-updated', message: result.message });
+        } catch (error) {
+          handleFailure(error, 'That message could not be deleted.');
+        }
+      })();
+    },
+    [handleFailure],
+  );
+
+  /**
+   * Forwards a message into other conversations.
+   *
+   * A fresh `clientMessageId` per destination — the idempotency key, so a retry after a dropped
+   * response collides with the stored row instead of forwarding a file twice.
+   *
+   * Nothing is dispatched for the destinations themselves: each forward arrives as a normal
+   * `message:new`, including in this window, so inserting it here as well would be the one place
+   * a message could appear twice.
+   */
+  const forwardTo = useCallback(
+    async (message: ChatMessage, conversationIds: string[]): Promise<number> => {
+      if (conversationIds.length === 0) return 0;
+
+      try {
+        const result = await sendForward(
+          message.id,
+          conversationIds.map((conversationId) => ({
+            conversationId,
+            clientMessageId: newClientMessageId(),
+          })),
+        );
+
+        if (result.failures.length > 0) {
+          dispatch({
+            type: 'notice',
+            message:
+              result.messages.length > 0
+                ? `Forwarded to ${result.messages.length} of ${conversationIds.length} conversations.`
+                : 'That message could not be forwarded.',
+          });
+        }
+
+        await loadConversations();
+        return result.messages.length;
+      } catch (error) {
+        handleFailure(error, 'That message could not be forwarded.');
+        return 0;
+      }
+    },
+    [handleFailure, loadConversations],
+  );
+
   return {
     state,
+    replyTarget,
+    beginReply,
+    cancelReply,
+    toggleReaction,
+    togglePin,
+    deleteForMe,
+    deleteForEveryone,
+    forwardTo,
     selectConversation,
     startDirectConversation,
     createGroup,

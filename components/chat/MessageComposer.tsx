@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 
 import { Button, IconButton } from '@/components/ui/Button';
-import { AttachmentIcon, CloseIcon, FileIcon, SendIcon } from '@/components/ui/icons';
+import { AttachmentIcon, CloseIcon, FileIcon, ReplyIcon, SendIcon } from '@/components/ui/icons';
 import { formatFileSize } from '@/lib/chat/format';
+import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
 
 interface MessageComposerProps {
@@ -17,6 +18,11 @@ interface MessageComposerProps {
   uploading: boolean;
   /** Bytes. Checked here so an oversized file is refused before it is sent, and again by the server. */
   maxFileSize: number;
+  /** The message being replied to, or null. Purely local until the reply is actually sent. */
+  replyTarget: ChatMessage | null;
+  usersById: Map<string, UserSummary>;
+  currentUserId: string;
+  onCancelReply(): void;
 }
 
 /** Show the character counter only when the limit is close enough to matter. */
@@ -28,6 +34,10 @@ export function MessageComposer({
   onSendFile,
   uploading,
   maxFileSize,
+  replyTarget,
+  usersById,
+  currentUserId,
+  onCancelReply,
 }: MessageComposerProps) {
   const [body, setBody] = useState('');
   /*
@@ -106,6 +116,14 @@ export function MessageComposer({
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
+      return;
+    }
+
+    // Escape abandons the reply without clearing what has been typed. Only when there is one to
+    // abandon, so Escape keeps its usual meaning the rest of the time.
+    if (event.key === 'Escape' && replyTarget) {
+      event.preventDefault();
+      onCancelReply();
     }
   };
 
@@ -128,6 +146,33 @@ export function MessageComposer({
           aria-hidden="true"
           tabIndex={-1}
         />
+
+        {/*
+          The reply banner.
+          
+          Above the file card and the text area, where the eye reaches it before typing — a reply
+          that is only apparent after sending is a reply somebody did not mean to make. Cancelling
+          is always one press away, and Escape in the text area does the same thing.
+        */}
+        {replyTarget ? (
+          <div className="mb-2 flex animate-rise-in items-center gap-2 rounded-card border border-accent/20 bg-accent-tint px-3 py-2">
+            <ReplyIcon className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] font-semibold text-brand">
+                Replying to{' '}
+                {replyTarget.senderId === currentUserId
+                  ? 'yourself'
+                  : (usersById.get(replyTarget.senderId ?? '')?.displayName ?? 'Unknown user')}
+              </span>
+              <span className="block truncate text-xs text-ink-muted">
+                {replyTarget.body?.trim() || replyTarget.attachment?.filename || 'Attachment'}
+              </span>
+            </span>
+            <IconButton label="Cancel reply" onClick={onCancelReply}>
+              <CloseIcon className="h-4 w-4" />
+            </IconButton>
+          </div>
+        ) : null}
 
         {file ? (
           <div className="mb-2 flex animate-rise-in items-center gap-3 rounded-card border border-accent/20 bg-accent-tint px-3 py-2.5 shadow-subtle">

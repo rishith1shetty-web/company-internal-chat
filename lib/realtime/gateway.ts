@@ -37,7 +37,7 @@ import {
 } from '../authz/membership';
 import type { Logger } from '../logging/logger';
 import { describeError } from '../logging/logger';
-import { SendMessageError, sendMessage } from '../messages/service';
+import { SendMessageError, sendMessage, type StoredMessage } from '../messages/service';
 import type { NetworkGate } from '../net/gate';
 import {
   SOCKET_PATH,
@@ -108,6 +108,10 @@ function toSocketError(error: unknown): SocketError {
         return { code: 'MESSAGE_TOO_LONG', message: error.message };
       case 'EMPTY_BODY':
         return { code: 'MESSAGE_EMPTY', message: error.message };
+      case 'REPLY_TARGET_INVALID':
+        // Same code as "not a member": a reply target the sender may not quote must not be
+        // distinguishable from one that does not exist.
+        return { code: 'FORBIDDEN', message: error.message };
     }
   }
 
@@ -461,9 +465,11 @@ export function createRealtimeGateway(
             conversationId: parsed.data.conversationId,
             body: parsed.data.body,
             clientMessageId: parsed.data.clientMessageId,
+            // Verified by the service against this sender's own window before it is written.
+            replyToId: parsed.data.replyToId,
           });
 
-          const wire = toMessageWire(result.message);
+          const wire = toMessageWire(result.message, result.viewerJoinedAt);
 
           // The acknowledgement follows the commit, never precedes it.
           respond(ack, { ok: true, data: wire });
@@ -496,8 +502,21 @@ export function createRealtimeGateway(
            */
           await ensureMembersInRoom(wire.conversationId, userId);
 
-          // Everyone in the room except the sender, whose acknowledgement already carried it.
-          socket.to(rooms.conversation(wire.conversationId)).emit('message:new', wire);
+          /*
+           * A plain message says the same thing to every member, so it goes to the room — one
+           * payload, one emit, exactly as before.
+           *
+           * A REPLY does not: it carries a quoted preview of another message, which some members
+           * may not be entitled to read. Those go through the per-member path instead.
+           */
+          if (result.message.replyTo === null) {
+            // Everyone in the room except the sender, whose acknowledgement already carried it.
+            socket.to(rooms.conversation(wire.conversationId)).emit('message:new', wire);
+          } else {
+            await emitMessageToMembers('message:new', wire.conversationId, result.message, {
+              excludeUserId: userId,
+            });
+          }
         } catch (error) {
           const socketError = toSocketError(error);
           if (socketError.code === 'INTERNAL_ERROR') {
@@ -520,6 +539,54 @@ export function createRealtimeGateway(
    * would otherwise deliver to an empty room. Membership is read from the database; the sender's
    * own other tabs are included so every window of theirs stays in step.
    */
+  /**
+   * Emits a message to each active member individually, serialized for that member.
+   *
+   * WHY NOT A ROOM BROADCAST. A room broadcast sends one payload to everybody, which is correct
+   * only when the payload says the same thing to everybody. Two Batch 1 cases break that:
+   *
+   *   1. **A quoted reply.** The preview embeds another message's text, and that message can be
+   *      older than a member's `joinedAt` — a group member who joined on Tuesday must not read
+   *      Monday's words merely because somebody replied to them on Wednesday (D-03).
+   *   2. **An update to an old message.** A reaction or a pin on a message that predates a
+   *      member's join must not reach them at all; they cannot see the message it describes.
+   *
+   * So the audience is read from the database, each member is filtered on their own `joinedAt`,
+   * and the wire is built once per member. Member counts here are an office's worth of people,
+   * so this costs one small serialization each and no extra queries.
+   *
+   * Never throws: the row is committed before this is called, and a delivery failure must not
+   * turn a successful action into a failed request.
+   */
+  async function emitMessageToMembers(
+    event: 'message:new' | 'message:updated',
+    conversationId: string,
+    stored: StoredMessage,
+    options: { excludeUserId?: string } = {},
+  ): Promise<void> {
+    try {
+      const members = await db.conversationMember.findMany({
+        where: { conversationId, leftAt: null },
+        select: { userId: true, joinedAt: true },
+      });
+
+      for (const member of members) {
+        if (options.excludeUserId !== undefined && member.userId === options.excludeUserId) {
+          continue;
+        }
+        // The message itself is outside this member's window: they are told nothing.
+        if (stored.createdAt < member.joinedAt) continue;
+
+        io.to(rooms.user(member.userId)).emit(event, toMessageWire(stored, member.joinedAt));
+      }
+    } catch (error) {
+      logger.warn('Could not deliver a message update over the socket', {
+        conversationId,
+        ...describeError(error),
+      });
+    }
+  }
+
   async function ensureMembersInRoom(conversationId: string, senderId: string): Promise<void> {
     try {
       const peerIds = await listOtherActiveMemberIds(db, conversationId, senderId);
@@ -625,6 +692,32 @@ export function createRealtimeGateway(
           });
         }
       })();
+    },
+
+    /**
+     * A reaction, a pin or a delete-for-everyone, committed over HTTP (Batch 1).
+     *
+     * The room is repaired first for the same reason the send path repairs it, and then the
+     * message goes out per member — including to the actor's own other tabs, so a pin toggled on
+     * the desktop app is reflected in a browser window they left open.
+     */
+    messageUpdated(update): void {
+      void (async () => {
+        await emitMessageToMembers('message:updated', update.conversationId, update.message);
+      })();
+    },
+
+    /**
+     * One person hid one message for themselves.
+     *
+     * Emitted into that user's own room and nowhere else: for everybody else nothing happened,
+     * and telling them would be both wrong and a disclosure of what somebody chose to hide.
+     */
+    messageHidden(hidden): void {
+      io.to(rooms.user(hidden.userId)).emit('message:hidden', {
+        conversationId: hidden.conversationId,
+        messageId: hidden.messageId,
+      });
     },
   };
 

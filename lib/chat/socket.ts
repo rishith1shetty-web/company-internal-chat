@@ -41,6 +41,16 @@ export interface ChatSocketHandlers {
   /** The connection is authenticated and its rooms are joined. Carries the server's own view. */
   onSessionReady(payload: SessionWire): void;
   onMessage(payload: MessageWire): void;
+  /**
+   * A message that already exists changed — a reaction, a pin, or a delete-for-everyone.
+   *
+   * Separate from `onMessage` on purpose. `message:new` is a new message and follows the normal
+   * notification path (sound, toast, unread); this one is a visual update and must not, or
+   * somebody reacting to a week-old message would ring every desk in the office.
+   */
+  onMessageUpdated(payload: MessageWire): void;
+  /** This user hid a message for themselves, in this window or another of theirs. */
+  onMessageHidden(payload: { conversationId: string; messageId: string }): void;
   onPresence(payload: PresenceWire): void;
   /**
    * A conversation this user is — or has just stopped being — a member of has changed.
@@ -59,6 +69,8 @@ export interface ChatSocketClient {
     conversationId: string;
     body: string;
     clientMessageId: string;
+    /** The message being replied to. Re-verified server-side before it is written. */
+    replyToId?: string | undefined;
   }): Promise<Ack<MessageWire>>;
   /** Current presence of everyone the caller shares a conversation with. */
   syncPresence(): Promise<Ack<PresenceWire[]>>;
@@ -99,6 +111,8 @@ export function createChatSocket(handlers: ChatSocketHandlers): ChatSocketClient
 
   socket.on('session:ready', handlers.onSessionReady);
   socket.on('message:new', handlers.onMessage);
+  socket.on('message:updated', handlers.onMessageUpdated);
+  socket.on('message:hidden', handlers.onMessageHidden);
   socket.on('presence:update', handlers.onPresence);
   socket.on('conversation:changed', handlers.onConversationChanged);
   socket.on('server:error', handlers.onServerError);

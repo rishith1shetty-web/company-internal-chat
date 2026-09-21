@@ -157,3 +157,64 @@ export function ShieldIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/* ------------------------------------------------------------------------------------------- */
+/* Message actions (Batch 1)                                                                     */
+/* ------------------------------------------------------------------------------------------- */
+
+export function ReplyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 7 4 12l5 5" />
+      <path d="M4 12h8a8 8 0 0 1 8 8" />
+    </Svg>
+  );
+}
+
+export function CopyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+    </Svg>
+  );
+}
+
+export function EmojiIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M9 10h.01M15 10h.01" />
+      <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" />
+    </Svg>
+  );
+}
+
+export function ForwardIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m15 7 5 5-5 5" />
+      <path d="M20 12h-8a8 8 0 0 0-8 8" />
+    </Svg>
+  );
+}
+
+export function PinIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 17v5" />
+      <path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Z" />
+    </Svg>
+  );
+}
+
+export function TrashIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 7h16" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M6 7h12l-1 13H7L6 7Z" />
+      <path d="M9 7V4h6v3" />
+    </Svg>
+  );
+}

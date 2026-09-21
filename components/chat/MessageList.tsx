@@ -1,18 +1,46 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AttachmentCard, UploadCard } from '@/components/chat/AttachmentCard';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
-import { ChatIcon } from '@/components/ui/icons';
+import {
+  MessageContextMenu,
+  type MessageMenuAction,
+} from '@/components/chat/MessageContextMenu';
+import { ChatIcon, ForwardIcon, PinIcon } from '@/components/ui/icons';
 import { formatDayLabel, formatFullTimestamp, formatTime } from '@/lib/chat/format';
 import type { ChatMessage, PendingUpload, UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
 
+/**
+ * What the message list can do to a message.
+ *
+ * Grouped into one object rather than six props: they are always supplied together by the
+ * workspace, and a list of individually optional callbacks is how half of a feature ends up
+ * silently wired.
+ *
+ * Copy is absent on purpose — it is pure clipboard work with no server involvement, so the list
+ * does it itself rather than asking the workspace to.
+ */
+export interface MessageActions {
+  onReply(message: ChatMessage): void;
+  onReact(message: ChatMessage, emoji: string): void;
+  onForward(message: ChatMessage): void;
+  onTogglePin(message: ChatMessage): void;
+  /** Opens the delete dialog. The list never deletes anything directly. */
+  onRequestDelete(message: ChatMessage): void;
+  /** Scrolls to a quoted message, when it is loaded. */
+  onJumpToMessage(messageId: string): void;
+}
+
 interface MessageListProps {
   messages: ChatMessage[];
   currentUserId: string;
+  actions: MessageActions;
+  /** The message to flash after a jump, so the eye can find it. */
+  highlightedMessageId: string | null;
   usersById: Map<string, UserSummary>;
   /** Group conversations name the sender above the bubble; direct ones do not need to. */
   showSenderNames: boolean;
@@ -39,6 +67,8 @@ const GROUPING_WINDOW_MS = 5 * 60_000;
 export function MessageList({
   messages,
   currentUserId,
+  actions,
+  highlightedMessageId,
   usersById,
   showSenderNames,
   conversationId,
@@ -52,6 +82,31 @@ export function MessageList({
   onDismissUpload,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  /** Which message was right-clicked, and where. Null when no menu is open. */
+  const [menu, setMenu] = useState<{ message: ChatMessage; x: number; y: number } | null>(null);
+  /** A short "Copied" confirmation. Local, transient, and never a server round trip. */
+  const [copied, setCopied] = useState(false);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  /*
+   * Copy is entirely client-side (requirement 3): the text for a text message, the caption for a
+   * file with one, and otherwise the filename — never the bytes, which is why an attachment-only
+   * message copies its name rather than attempting a binary clipboard write.
+   */
+  const copyMessage = useCallback(async (message: ChatMessage) => {
+    const text = message.body?.trim() || message.attachment?.filename || '';
+    if (!text) return;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // A browser that refuses clipboard access is not an error worth interrupting anybody for.
+    }
+  }, []);
 
   // Follow the conversation: jump to the newest message when the conversation changes, and keep
   // up as messages arrive. Paging backwards only adds rows above, so it does not fight this.
@@ -102,11 +157,17 @@ export function MessageList({
               <MessageBubble
                 message={message}
                 isOwn={message.senderId === currentUserId}
+                currentUserId={currentUserId}
+                usersById={usersById}
                 senderName={usersById.get(message.senderId ?? '')?.displayName ?? 'Unknown user'}
                 senderId={message.senderId}
                 showSenderName={showSenderNames}
                 grouped={grouped}
+                highlighted={message.id === highlightedMessageId}
                 onRetry={() => onRetry(message)}
+                onReact={(emoji) => actions.onReact(message, emoji)}
+                onJumpToReplyTarget={actions.onJumpToMessage}
+                onOpenMenu={(x, y) => setMenu({ message, x, y })}
               />
             )}
           </li>
@@ -132,8 +193,110 @@ export function MessageList({
       ) : null}
 
       <div ref={bottomRef} />
+
+      {menu ? (
+        <MessageContextMenu
+          anchor={{ x: menu.x, y: menu.y }}
+          myReaction={myReactionTo(menu.message, currentUserId)}
+          onReact={
+            // A tombstone and a system message have nothing to react to.
+            menu.message.deletedAt === null && menu.message.kind !== 'SYSTEM'
+              ? (emoji) => actions.onReact(menu.message, emoji)
+              : null
+          }
+          actions={buildMenuActions(menu.message, {
+            isOwn: menu.message.senderId === currentUserId,
+            onReply: () => actions.onReply(menu.message),
+            onCopy: () => void copyMessage(menu.message),
+            onForward: () => actions.onForward(menu.message),
+            onTogglePin: () => actions.onTogglePin(menu.message),
+            onDelete: () => actions.onRequestDelete(menu.message),
+          })}
+          onClose={closeMenu}
+        />
+      ) : null}
+
+      {/*
+        The copy confirmation. `role="status"` rather than an alert: it is reassurance, not
+        something that should interrupt a screen reader mid-sentence.
+      */}
+      {copied ? (
+        <div
+          role="status"
+          className="pointer-events-none fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-white shadow-lg"
+        >
+          Copied
+        </div>
+      ) : null}
     </div>
   );
+}
+
+/** This reader's own reaction to a message, or null. Derived from ids, never from a flag. */
+function myReactionTo(message: ChatMessage, currentUserId: string): string | null {
+  return (
+    message.reactions.find((reaction) => reaction.userIds.includes(currentUserId))?.emoji ?? null
+  );
+}
+
+/**
+ * Which menu entries a message offers.
+ *
+ * `available` is computed from the message rather than the entries being hidden at the call
+ * site, so the rules are in one place and readable together:
+ *
+ *   - A tombstone offers only "Delete for me" — there is nothing left to reply to, copy, forward
+ *     or pin.
+ *   - A SYSTEM message ("X joined the group") is the server talking: it can be copied and hidden,
+ *     nothing else.
+ *   - "Delete for everyone" is offered only on your own messages. The server enforces that
+ *     independently; hiding the row is a courtesy, never the control.
+ *   - A message still sending has no server id yet, so nothing that needs one is offered.
+ */
+function buildMenuActions(
+  message: ChatMessage,
+  handlers: {
+    isOwn: boolean;
+    onReply(): void;
+    onCopy(): void;
+    onForward(): void;
+    onTogglePin(): void;
+    onDelete(): void;
+  },
+): MessageMenuAction[] {
+  const deleted = message.deletedAt !== null;
+  const system = message.kind === 'SYSTEM';
+  const settled = message.deliveryState === 'SENT';
+  const hasText = Boolean(message.body?.trim() || message.attachment?.filename);
+
+  return [
+    {
+      key: 'reply',
+      label: 'Reply',
+      available: settled && !deleted && !system,
+      onSelect: handlers.onReply,
+    },
+    { key: 'copy', label: 'Copy', available: !deleted && hasText, onSelect: handlers.onCopy },
+    {
+      key: 'forward',
+      label: 'Forward',
+      available: settled && !deleted && !system,
+      onSelect: handlers.onForward,
+    },
+    {
+      key: 'pin',
+      label: message.pinnedAt === null ? 'Pin' : 'Unpin',
+      available: settled && !deleted && !system,
+      onSelect: handlers.onTogglePin,
+    },
+    {
+      key: 'delete',
+      label: 'Delete',
+      available: settled,
+      danger: true,
+      onSelect: handlers.onDelete,
+    },
+  ];
 }
 
 interface MessageRow {
@@ -206,11 +369,19 @@ function SystemMessage({ message }: { message: ChatMessage }) {
 interface MessageBubbleProps {
   message: ChatMessage;
   isOwn: boolean;
+  currentUserId: string;
+  usersById: Map<string, UserSummary>;
   senderId: string | null;
   senderName: string;
   showSenderName: boolean;
   grouped: boolean;
+  /** Briefly outlined after somebody jumped to it from a reply or the pinned banner. */
+  highlighted: boolean;
   onRetry: () => void;
+  onReact: (emoji: string) => void;
+  onJumpToReplyTarget: (messageId: string) => void;
+  /** Viewport coordinates of the right-click. */
+  onOpenMenu: (x: number, y: number) => void;
 }
 
 /**
@@ -223,21 +394,41 @@ interface MessageBubbleProps {
 function MessageBubble({
   message,
   isOwn,
+  currentUserId,
+  usersById,
   senderId,
   senderName,
   showSenderName,
   grouped,
+  highlighted,
   onRetry,
+  onReact,
+  onJumpToReplyTarget,
+  onOpenMenu,
 }: MessageBubbleProps) {
   const sending = message.deliveryState === 'SENDING';
   const failed = message.deliveryState === 'FAILED';
+  const deleted = message.deletedAt !== null;
 
   return (
     <div
+      id={`message-${message.id}`}
+      data-message-id={message.id}
+      /*
+       * The right-click target is the whole row, so the menu opens from the generous area around
+       * a short message rather than only from the few characters in it. `preventDefault` replaces
+       * the browser's own menu — a deliberate trade every chat application makes, and the reason
+       * the menu below has to provide Copy itself.
+       */
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu(event.clientX, event.clientY);
+      }}
       className={cn(
-        'flex items-end gap-2',
+        'flex items-end gap-2 rounded-lg transition-colors duration-500',
         grouped ? 'mt-0.5' : 'mt-3',
         isOwn ? 'justify-end' : 'justify-start',
+        highlighted && 'bg-accent/10',
       )}
     >
       {!isOwn ? (
@@ -275,13 +466,94 @@ function MessageBubble({
             body, so somebody can send a spreadsheet and say what it is in one message; when there
             is no caption the bubble is just the file.
           */}
-          {message.attachment ? (
-            <AttachmentCard attachment={message.attachment} isOwn={isOwn} />
-          ) : null}
-          {message.body ? (
-            <span className={cn('block', message.attachment && 'mt-2')}>{message.body}</span>
-          ) : null}
+          {/*
+            A message deleted for everyone. The body and the attachment are already null — the
+            server cleared them — so this renders a tombstone rather than hiding content that is
+            still present. Italic and muted, because it is a statement about the conversation
+            rather than something somebody said.
+          */}
+          {deleted ? (
+            <span className={cn('block italic', isOwn ? 'text-white/70' : 'text-ink-subtle')}>
+              This message was deleted
+            </span>
+          ) : (
+            <>
+              {message.isForwarded ? (
+                <span
+                  className={cn(
+                    'mb-1 flex items-center gap-1 text-[11px] italic',
+                    isOwn ? 'text-white/70' : 'text-ink-subtle',
+                  )}
+                >
+                  <ForwardIcon className="h-3 w-3" />
+                  Forwarded
+                </span>
+              ) : null}
+
+              {message.replyTo ? (
+                <ReplyQuote
+                  reply={message.replyTo}
+                  isOwn={isOwn}
+                  senderName={
+                    message.replyTo.senderId === currentUserId
+                      ? 'You'
+                      : (usersById.get(message.replyTo.senderId ?? '')?.displayName ??
+                        'Unknown user')
+                  }
+                  onJump={() => onJumpToReplyTarget(message.replyTo!.id)}
+                />
+              ) : null}
+
+              {message.attachment ? (
+                <AttachmentCard attachment={message.attachment} isOwn={isOwn} />
+              ) : null}
+              {message.body ? (
+                <span className={cn('block', message.attachment && 'mt-2')}>{message.body}</span>
+              ) : null}
+            </>
+          )}
         </div>
+
+        {/*
+          Reactions sit under the bubble rather than inside it: they are other people's, and
+          putting them in the bubble would make them look like part of the message.
+        */}
+        {message.reactions.length > 0 && !deleted ? (
+          <div className={cn('mt-1 flex flex-wrap gap-1', isOwn && 'justify-end')}>
+            {message.reactions.map((reaction) => {
+              const mine = reaction.userIds.includes(currentUserId);
+              const who = reaction.userIds
+                .map((id) =>
+                  id === currentUserId
+                    ? 'You'
+                    : (usersById.get(id)?.displayName ?? 'Unknown user'),
+                )
+                .join(', ');
+
+              return (
+                <button
+                  key={reaction.emoji}
+                  type="button"
+                  onClick={() => onReact(reaction.emoji)}
+                  title={`${who} reacted with ${reaction.emoji}`}
+                  aria-label={`${who} reacted with ${reaction.emoji}. Select to ${mine ? 'remove yours' : 'add yours'}.`}
+                  aria-pressed={mine}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] leading-4',
+                    'cursor-pointer transition-colors duration-(--duration-quick)',
+                    'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
+                    mine
+                      ? 'border-accent/40 bg-accent/15 text-ink'
+                      : 'border-line bg-surface text-ink-muted hover:bg-surface-muted',
+                  )}
+                >
+                  <span aria-hidden="true">{reaction.emoji}</span>
+                  <span className="font-medium tabular-nums">{reaction.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
 
         <p className={cn('mt-1 text-[11px] text-ink-subtle', isOwn && 'text-right')}>
           <time
@@ -292,6 +564,12 @@ function MessageBubble({
             {formatTime(message.createdAt)}
           </time>
           {sending ? <span className="ml-1.5">Sending…</span> : null}
+          {message.pinnedAt !== null && !deleted ? (
+            <span className="ml-1.5 inline-flex items-center gap-0.5" title="Pinned">
+              <PinIcon className="inline h-3 w-3" />
+              <span className="sr-only">Pinned</span>
+            </span>
+          ) : null}
         </p>
 
         {/*
@@ -313,5 +591,72 @@ function MessageBubble({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The quoted message above a reply.
+ *
+ * Renders only what the server sent. `unavailable` and `deleted` are different states and are
+ * shown differently on purpose: "deleted" is a fact about the conversation that everyone shares,
+ * while "unavailable" means this reader is not entitled to the original — so it says as little as
+ * possible and is not clickable, because there is nothing to jump to.
+ */
+function ReplyQuote({
+  reply,
+  isOwn,
+  senderName,
+  onJump,
+}: {
+  reply: NonNullable<ChatMessage['replyTo']>;
+  isOwn: boolean;
+  senderName: string;
+  onJump: () => void;
+}) {
+  const text = reply.deleted
+    ? 'Message deleted'
+    : reply.unavailable
+      ? 'Original message'
+      : (reply.body ?? reply.attachmentFilename ?? 'Attachment');
+
+  const content = (
+    <>
+      <span className={cn('block text-[11px] font-semibold', isOwn ? 'text-white/85' : 'text-brand')}>
+        {reply.unavailable ? 'Reply' : senderName}
+      </span>
+      <span
+        className={cn(
+          'block truncate text-xs',
+          isOwn ? 'text-white/75' : 'text-ink-muted',
+          (reply.deleted || reply.unavailable) && 'italic',
+        )}
+      >
+        {text}
+      </span>
+    </>
+  );
+
+  const className = cn(
+    'mb-1.5 block w-full rounded-md border-l-2 px-2 py-1 text-left',
+    isOwn ? 'border-white/50 bg-white/10' : 'border-accent/60 bg-surface-muted',
+  );
+
+  // Nothing to jump to: the reader cannot see the original at all.
+  if (reply.unavailable) {
+    return <span className={className}>{content}</span>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onJump}
+      className={cn(
+        className,
+        'cursor-pointer transition-opacity duration-(--duration-quick) hover:opacity-80',
+        'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
+      )}
+    >
+      {content}
+    </button>
   );
 }

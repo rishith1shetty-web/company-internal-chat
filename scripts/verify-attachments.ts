@@ -72,10 +72,37 @@ async function main(): Promise<void> {
     out(`  storage     ${uploadDir}`);
     out();
 
+    /*
+     * Only `READY` rows.
+     *
+     * Delete-for-everyone (Batch 1) sets an attachment to `DELETED` and removes its bytes on
+     * purpose, so those rows have no file by design. Checking them would report every deleted
+     * file as MISSING and turn a clean verification into a wall of false failures — which is how
+     * a check like this stops being read.
+     *
+     * `PENDING` and `FAILED` are excluded for the same reason: neither promises bytes on disk.
+     */
     const attachments = await db.attachment.findMany({
+      where: { status: 'READY' },
       select: { id: true, storageKey: true, byteSize: true, checksumSha256: true },
       orderBy: { createdAt: 'asc' },
     });
+
+    /*
+     * Counted separately, and tolerantly.
+     *
+     * `DELETED` is a value migration #3 adds to the enum, so on a database where that migration
+     * has not been applied yet PostgreSQL rejects the comparison outright. This tool has to keep
+     * working against a server that is mid-upgrade — it is exactly what an administrator reaches
+     * for when they are unsure whether a deployment went cleanly — so an older database reports
+     * no deleted attachments rather than failing the whole verification.
+     */
+    let deleted = 0;
+    try {
+      deleted = await db.attachment.count({ where: { status: 'DELETED' } });
+    } catch {
+      deleted = 0;
+    }
 
     if (attachments.length === 0) {
       out('  No attachments recorded. Nothing to verify.');
@@ -128,6 +155,9 @@ async function main(): Promise<void> {
     out(`  wrong size        ${wrongSize}`);
     out(`  wrong checksum    ${wrongHash}`);
     out(`  no checksum       ${unchecksummed}`);
+    if (deleted > 0) {
+      out(`  deleted           ${deleted}  (bytes removed deliberately; not checked)`);
+    }
     out();
 
     if (missing + wrongSize + wrongHash > 0) {

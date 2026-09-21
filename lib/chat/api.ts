@@ -26,6 +26,9 @@ import type {
   MessagePageWire,
   ReadReceiptWire,
   SessionIdentityWire,
+  ForwardResultWire,
+  MessageMutationWire,
+  PinnedMessagesWire,
 } from '@/lib/chat/wire';
 
 /** A failed request, carrying a message that is already safe to show a user. */
@@ -332,4 +335,93 @@ export function fetchConversationAttachments(
   return request<ConversationAttachmentsWire>(
     `/api/conversations/${encodeURIComponent(conversationId)}/attachments`,
   );
+}
+
+/* ------------------------------------------------------------------------------------------- */
+/* Message actions (Batch 1)                                                                     */
+/* ------------------------------------------------------------------------------------------- */
+
+/**
+ * Sets, or changes, this user's reaction to a message.
+ *
+ * PUT because one person has at most one reaction to one message: it replaces a value at a known
+ * address, so sending it twice leaves the same state. There is no user id in the request — the
+ * reaction belongs to whoever the cookie resolves to.
+ */
+export function setReaction(messageId: string, emoji: string): Promise<MessageMutationWire> {
+  return request<MessageMutationWire>(
+    `/api/messages/${encodeURIComponent(messageId)}/reactions`,
+    { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ emoji }) },
+  );
+}
+
+/** Removes this user's own reaction. Removing one that is not there is a success. */
+export function clearReaction(messageId: string): Promise<MessageMutationWire> {
+  return request<MessageMutationWire>(
+    `/api/messages/${encodeURIComponent(messageId)}/reactions`,
+    { method: 'DELETE' },
+  );
+}
+
+/** Pins or unpins a message for the whole conversation. */
+export function setMessagePinned(
+  messageId: string,
+  pinned: boolean,
+): Promise<MessageMutationWire> {
+  return request<MessageMutationWire>(`/api/messages/${encodeURIComponent(messageId)}/pin`, {
+    method: pinned ? 'POST' : 'DELETE',
+  });
+}
+
+/** The pinned messages of a conversation, newest pin first. */
+export function fetchPinnedMessages(conversationId: string): Promise<PinnedMessagesWire> {
+  return request<PinnedMessagesWire>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/pins`,
+  );
+}
+
+/**
+ * Hides a message from this user only. Nobody else is affected.
+ *
+ * Answers 204 with no body, so there is nothing to parse — the caller updates its own state from
+ * the message id it already had.
+ */
+export async function deleteMessageForMe(messageId: string): Promise<void> {
+  await request<undefined>(`/api/messages/${encodeURIComponent(messageId)}/delete`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ scope: 'ME' }),
+  });
+}
+
+/**
+ * Replaces a message with a tombstone for everyone in the conversation.
+ *
+ * The server refuses this for anybody but the original sender; the interface only offering it on
+ * your own messages is a convenience, never the control.
+ */
+export function deleteMessageForEveryone(messageId: string): Promise<MessageMutationWire> {
+  return request<MessageMutationWire>(`/api/messages/${encodeURIComponent(messageId)}/delete`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ scope: 'EVERYONE' }),
+  });
+}
+
+/**
+ * Forwards a message into one or more conversations.
+ *
+ * Each destination carries its own `clientMessageId` — the same idempotency key a send uses, so a
+ * retry after a dropped response collides with the stored row instead of forwarding a file twice.
+ * Destinations are authorized one at a time, so the answer can be a partial success.
+ */
+export function forwardMessage(
+  messageId: string,
+  destinations: { conversationId: string; clientMessageId: string }[],
+): Promise<ForwardResultWire> {
+  return request<ForwardResultWire>(`/api/messages/${encodeURIComponent(messageId)}/forward`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ destinations }),
+  });
 }

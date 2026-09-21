@@ -23,6 +23,7 @@ import type {
   Conversation,
   DeliveryState,
   PendingUpload,
+  ReplyPreview,
   SharedFile,
   UserSummary,
 } from '@/lib/chat/types';
@@ -105,6 +106,17 @@ export interface ChatState {
    * it from what happens to be loaded would make the panel change as somebody scrolled.
    */
   attachments: Record<string, { loading: boolean; files: SharedFile[] }>;
+  /**
+   * Pinned messages per conversation, newest pin first.
+   *
+   * Kept separately from `messagesByConversation` for the same reason the file panel is: a pinned
+   * message can be far outside the pages of history that happen to be loaded, and deriving the
+   * banner from what is on screen would make pins appear and disappear as somebody scrolled.
+   *
+   * Maintained live by the reducer rather than re-fetched on every change — a pin or an unpin
+   * arrives as `message:updated`, which carries everything needed to add or remove the entry.
+   */
+  pinnedByConversation: Record<string, ChatMessage[]>;
   /** A failure the user should be told about, cleared when it stops being true. */
   notice: string | null;
 }
@@ -139,11 +151,23 @@ export type ChatAction =
       clientMessageId: string;
       body: string;
       now: string;
+      /** The quoted message, so the optimistic bubble shows the reply before the server answers. */
+      replyTo?: ReplyPreview | null;
     }
   | { type: 'message-acknowledged'; clientMessageId: string; message: MessageWire }
   | { type: 'message-retrying'; conversationId: string; clientMessageId: string }
   | { type: 'message-failed'; conversationId: string; clientMessageId: string; message: string }
   | { type: 'message-received'; message: MessageWire }
+  /**
+   * A message that is already on screen changed — a reaction, a pin, or a delete-for-everyone.
+   *
+   * Never bumps an unread count and never reorders the sidebar: reacting to or pinning something
+   * is not a new message, and treating it as one would put a badge on a conversation nobody wrote
+   * in.
+   */
+  | { type: 'message-updated'; message: MessageWire }
+  /** This user hid a message for themselves, here or in another of their windows. */
+  | { type: 'message-hidden'; conversationId: string; messageId: string }
   | { type: 'presence-changed'; entries: PresenceWire[] }
   | { type: 'connection-changed'; connection: ConnectionState }
   | { type: 'unread-cleared'; conversationId: string; unreadCount: number }
@@ -159,6 +183,7 @@ export type ChatAction =
   | { type: 'upload-finished'; clientMessageId: string }
   | { type: 'attachments-loading'; conversationId: string }
   | { type: 'attachments-loaded'; conversationId: string; files: SharedFile[] }
+  | { type: 'pins-loaded'; conversationId: string; messages: MessageWire[] }
   | { type: 'notice'; message: string | null };
 
 export const initialChatState: ChatState = {
@@ -174,6 +199,7 @@ export const initialChatState: ChatState = {
   connection: 'connecting',
   uploads: {},
   attachments: {},
+  pinnedByConversation: {},
   notice: null,
 };
 
@@ -261,6 +287,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         notice: action.message,
       };
 
+    case 'message-updated':
+      return updateMessage(state, action.message);
+    case 'message-hidden':
+      return hideMessage(state, action.conversationId, action.messageId);
     case 'message-received':
       return receiveMessage(state, action.message);
 
@@ -355,6 +385,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         },
       };
 
+    case 'pins-loaded':
+      return {
+        ...state,
+        pinnedByConversation: {
+          ...state.pinnedByConversation,
+          [action.conversationId]: action.messages.map((wire) => toChatMessage(wire)),
+        },
+      };
     case 'notice':
       return { ...state, notice: action.message };
 
@@ -378,6 +416,11 @@ export function toChatMessage(wire: MessageWire, deliveryState: DeliveryState = 
     createdAt: wire.createdAt,
     deliveryState,
     attachment: wire.attachment,
+    replyTo: wire.replyTo,
+    isForwarded: wire.isForwarded,
+    pinnedAt: wire.pinnedAt,
+    deletedAt: wire.deletedAt,
+    reactions: wire.reactions,
   };
 }
 
@@ -531,6 +574,16 @@ function queueMessage(
     createdAt: action.now,
     deliveryState: 'SENDING',
     attachment: null,
+    /*
+     * The optimistic bubble carries the reply preview the composer was showing, so a reply does
+     * not visibly "become" a reply a moment after it is sent. Everything else starts empty: a
+     * message cannot be forwarded, pinned, deleted or reacted to before it exists.
+     */
+    replyTo: action.replyTo ?? null,
+    isForwarded: false,
+    pinnedAt: null,
+    deletedAt: null,
+    reactions: [],
   };
 
   return insertMessage(state, optimistic, { countAsUnread: false });
@@ -593,6 +646,97 @@ function receiveMessage(state: ChatState, wire: MessageWire): ChatState {
     // and did not send themselves (a broadcast to their own other tab).
     countAsUnread: !isMine && !isOpen,
   });
+}
+
+/**
+ * Replaces one message in place.
+ *
+ * Deliberately a no-op when the message is not loaded: an update for a conversation whose history
+ * this window has never opened has nothing to update, and inserting it would put a message on
+ * screen out of order and without the page of context around it.
+ *
+ * The conversation tail is refreshed but the unread count is not touched, so a message deleted
+ * for everyone updates the sidebar preview to its tombstone without marking anything unread.
+ */
+function updateMessage(state: ChatState, wire: MessageWire): ChatState {
+  const existing = state.messagesByConversation[wire.conversationId];
+  if (!existing?.some((item) => item.id === wire.id)) return state;
+
+  const messages = existing.map((item) =>
+    item.id === wire.id
+      ? // The local delivery state is kept: the server has no opinion about whether this
+        // browser's own send has been acknowledged, and a reaction must not reset that.
+        { ...toChatMessage(wire, item.deliveryState) }
+      : item,
+  );
+
+  return {
+    ...state,
+    messagesByConversation: { ...state.messagesByConversation, [wire.conversationId]: messages },
+    conversations: refreshConversationTail(state.conversations, wire.conversationId, messages),
+    pinnedByConversation: applyPinChange(state.pinnedByConversation, toChatMessage(wire)),
+  };
+}
+
+/**
+ * Adds, updates or removes a message in the pinned list for its conversation.
+ *
+ * Driven entirely by the message that just arrived, so a pin made in another window appears here
+ * without a re-fetch. A tombstone is removed rather than kept: a message deleted for everyone
+ * loses its pin server-side, and leaving it in the banner would show a pinned "This message was
+ * deleted" — exactly the misleading pinned content the requirement rules out.
+ */
+function applyPinChange(
+  pinned: Record<string, ChatMessage[]>,
+  message: ChatMessage,
+): Record<string, ChatMessage[]> {
+  const current = pinned[message.conversationId];
+  // Nothing loaded for this conversation yet: the next `pins-loaded` is authoritative, and
+  // inventing a list here would show a partial banner built from whatever happened to arrive.
+  if (!current) return pinned;
+
+  const without = current.filter((item) => item.id !== message.id);
+  const stillPinned = message.pinnedAt !== null && message.deletedAt === null;
+
+  return {
+    ...pinned,
+    [message.conversationId]: stillPinned
+      ? [message, ...without].sort((a, b) => comparePinAge(a, b))
+      : without,
+  };
+}
+
+/** Newest pin first. Both are pinned, so the timestamps are present. */
+function comparePinAge(a: ChatMessage, b: ChatMessage): number {
+  return (b.pinnedAt ?? '').localeCompare(a.pinnedAt ?? '');
+}
+
+/**
+ * Removes a message this user hid for themselves.
+ *
+ * Only their own view changes; the row is still in the conversation for everybody else. The
+ * unread count is deliberately left alone — hiding a message is not reading it.
+ */
+function hideMessage(state: ChatState, conversationId: string, messageId: string): ChatState {
+  const existing = state.messagesByConversation[conversationId];
+  if (!existing?.some((item) => item.id === messageId)) return state;
+
+  const messages = existing.filter((item) => item.id !== messageId);
+  const pinned = state.pinnedByConversation[conversationId];
+
+  return {
+    ...state,
+    messagesByConversation: { ...state.messagesByConversation, [conversationId]: messages },
+    conversations: refreshConversationTail(state.conversations, conversationId, messages),
+    // A message hidden for this person leaves their pinned banner too. It is still pinned for
+    // everybody else, which is exactly what "delete for me" means.
+    pinnedByConversation: pinned
+      ? {
+          ...state.pinnedByConversation,
+          [conversationId]: pinned.filter((item) => item.id !== messageId),
+        }
+      : state.pinnedByConversation,
+  };
 }
 
 function insertMessage(

@@ -107,6 +107,32 @@ export interface PendingUpload {
   error: string | null;
 }
 
+/**
+ * The quoted message shown above a reply.
+ *
+ * Built entirely from what the server chose to send. The interface never looks the original up
+ * in its own loaded history to fill in a blank: what the server withheld, it withheld on purpose
+ * (`ReplyPreviewWire`), and quietly substituting a locally cached copy would defeat that.
+ */
+export interface ReplyPreview {
+  id: string;
+  senderId: string | null;
+  body: string | null;
+  attachmentFilename: string | null;
+  /** The original was deleted for everyone — render "Message deleted". */
+  deleted: boolean;
+  /** The original is outside this reader's window. Render a neutral, uninformative placeholder. */
+  unavailable: boolean;
+}
+
+/** One emoji's reactions on a message, aggregated by the server. */
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  /** Everyone who reacted with it. The interface derives "did I?" from this, not from a flag. */
+  userIds: string[];
+}
+
 export interface ChatMessage {
   id: string;
   /** Browser-minted idempotency key (docs/01-architecture.md §6). */
@@ -120,6 +146,21 @@ export interface ChatMessage {
   createdAt: string;
   deliveryState: DeliveryState;
   attachment: AttachmentSummary | null;
+  /** Set when this message replies to another. */
+  replyTo: ReplyPreview | null;
+  /** True when it was forwarded from elsewhere. */
+  isForwarded: boolean;
+  /** ISO-8601 UTC when pinned in this conversation, else null. */
+  pinnedAt: string | null;
+  /**
+   * ISO-8601 UTC when deleted for everyone.
+   *
+   * Non-null means render the tombstone. `body` and `attachment` are already null when this is
+   * set — the server cleared them, so there is nothing here to leak even if the interface got the
+   * condition wrong.
+   */
+  deletedAt: string | null;
+  reactions: MessageReaction[];
 }
 
 /** The newest message of a conversation, as the sidebar preview needs it. */

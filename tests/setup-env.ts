@@ -5,20 +5,40 @@
  * variables to `import.meta.env`), so without this the database suite would silently skip on a
  * machine that is correctly configured — the worst kind of green test run.
  *
- * Node's built-in loader again, rather than a `dotenv` dependency. A missing `.env` is not an
- * error: the database suite then skips deliberately, which is the intended behaviour for a
- * machine with no database.
+ * Node's built-in loader again, rather than a `dotenv` dependency.
+ *
+ * It also enforces the database guard. A missing or production-looking `DATABASE_URL` used to be
+ * survivable — the database suite skipped itself — and that is no longer acceptable on a machine
+ * where the development `.env` points at the live company database. The run is refused instead.
  */
 
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { assertTestDatabaseSafe } from './test-database-guard';
+
 try {
   process.loadEnvFile('.env');
 } catch {
-  // No .env: tests that need a database skip themselves.
+  // No .env. The guard below decides what that means; it is no longer silently survivable,
+  // because a run with no database is a run that proved nothing.
 }
+
+/*
+ * THE DATABASE GUARD, and it runs here for a reason.
+ *
+ * vitest loads this file before it imports a single test module, so a refusal happens before any
+ * test code is evaluated and therefore before any Prisma client can exist.
+ *
+ * It runs AFTER `.env` is loaded, not before — otherwise it would judge an environment the tests
+ * are not actually going to use. Note that `process.loadEnvFile` does not overwrite variables
+ * that are already set, so a DATABASE_URL exported by the shell still wins over the one in
+ * `.env`; that is exactly how a run is pointed at the isolated test cluster.
+ *
+ * See tests/test-database-guard.ts for what it refuses and why.
+ */
+assertTestDatabaseSafe();
 
 /*
  * A deterministic ADMIN_TOKEN for the test run.

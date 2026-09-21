@@ -60,6 +60,9 @@ enum AttachmentStatus {
   PENDING
   READY
   FAILED
+  /// Delete-for-everyone removed the bytes. The row is kept so the message that owned it stays
+  /// referentially intact and so a download can be refused deliberately rather than by absence.
+  DELETED
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -94,6 +97,10 @@ model User {
   messages             Message[]
   attachments          Attachment[]
   createdConversations Conversation[]       @relation("ConversationCreatedBy")
+  reactions            MessageReaction[]
+  hiddenMessages       MessageHide[]
+  pinnedMessages       Message[]            @relation("MessagePinnedBy")
+  deletedMessages      Message[]            @relation("MessageDeletedBy")
 
   @@index([normalizedName])
   @@index([lastSeenAt])
@@ -280,9 +287,39 @@ model Message {
   clientMessageId String      @db.Uuid
   createdAt       DateTime    @default(now()) @db.Timestamptz(3)
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender       User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  /// The message this one replies to (Batch 1). Always in the SAME conversation — enforced by
+  /// the service, because a foreign key cannot express "and the same conversationId".
+  ///
+  /// `SET NULL` rather than `Cascade`: a reply is a message in its own right and must survive
+  /// its parent. Delete-for-everyone is a tombstone and does not remove the row at all, so this
+  /// fires only when a whole conversation is deleted — at which point the reply is going too.
+  replyToId   String?   @db.Uuid
+  /// Marks a message that was forwarded from somewhere else.
+  ///
+  /// A flag, not a link. Recording WHICH message it came from would let a recipient learn that a
+  /// conversation they cannot see exists and who wrote in it, and would tie the forwarded copy's
+  /// lifecycle to a message in another conversation — the exact coupling that makes deleting an
+  /// original break a copy. The copy is independent by construction.
+  isForwarded Boolean   @default(false)
+  /// Non-null when this message is pinned in its conversation. Pinning is conversation-level and
+  /// visible to every member, so it lives on the message rather than per user.
+  pinnedAt    DateTime? @db.Timestamptz(3)
+  pinnedById  String?   @db.Uuid
+  /// Delete-for-everyone. The row is KEPT and `body` is cleared: replies, ordering and history
+  /// stay intact, and the interface renders a tombstone. Physical deletion of a message happens
+  /// only when its conversation is deleted.
+  deletedAt   DateTime? @db.Timestamptz(3)
+  deletedById String?   @db.Uuid
+
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?             @relation(fields: [senderId], references: [id], onDelete: SetNull)
   attachment   Attachment?
+  replyTo      Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies      Message[]         @relation("MessageReplies")
+  pinnedBy     User?             @relation("MessagePinnedBy", fields: [pinnedById], references: [id], onDelete: SetNull)
+  deletedBy    User?             @relation("MessageDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+  reactions    MessageReaction[]
+  hiddenFor    MessageHide[]
 
   /// The duplicate-send guard. SYSTEM messages have a null `senderId`; PostgreSQL treats NULLs
   /// as distinct in a unique index, so server-written messages never collide with each other.
@@ -291,6 +328,10 @@ model Message {
   /// rather than OFFSET: correct under concurrent inserts, and it does not degrade as history
   /// grows.
   @@index([conversationId, createdAt(sort: Desc), id(sort: Desc)])
+  /// The pinned-message panel reads this. Partial in spirit — most rows have a null `pinnedAt`.
+  @@index([conversationId, pinnedAt(sort: Desc)])
+  /// Reply previews are loaded by parent id when a page of history is rendered.
+  @@index([replyToId])
 }
 
 /// File metadata. Phase 3 creates the table only — no upload, download or storage exists until
@@ -330,4 +371,61 @@ model Attachment {
   @@index([conversationId])
   /// The abandoned-upload sweep (Phase 7) reads this.
   @@index([status, createdAt])
+}
+
+// ---------------------------------------------------------------------------------------------
+// Message actions (Batch 1)
+// ---------------------------------------------------------------------------------------------
+
+/// One person's reaction to one message.
+///
+/// ONE REACTION PER PERSON PER MESSAGE, enforced by `@@unique([messageId, userId])` rather than
+/// by application code. Two consequences follow, both deliberate:
+///
+///   - A double-tap cannot create two identical rows, whatever the client does or how often a
+///     request is retried.
+///   - Picking a different emoji REPLACES the existing one, because there is nowhere to put a
+///     second. The service does that as an upsert, so changing a reaction is one round trip and
+///     cannot leave a person with two.
+///
+/// The emoji is stored as text rather than as an enum so the palette can grow without a
+/// migration. The server still accepts only values from its own allow-list — an open column is
+/// not an open API.
+model MessageReaction {
+  id        String   @id @default(uuid(4)) @db.Uuid
+  messageId String   @db.Uuid
+  userId    String   @db.Uuid
+  /// A single emoji from the server's allow-list. VarChar(32) because one emoji can be several
+  /// code points (skin tones, ZWJ sequences) and 32 bytes covers those without inviting prose.
+  emoji     String   @db.VarChar(32)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Both the uniqueness rule and the lookup index for rendering a message's reactions.
+  @@unique([messageId, userId])
+  @@index([messageId])
+}
+
+/// "Delete for me": one person has hidden one message from their own view.
+///
+/// A separate table rather than a column, because the state belongs to the (message, person)
+/// pair and not to the message. The shared row is never touched — everyone else goes on seeing
+/// the message, which is the entire difference between this and delete-for-everyone.
+///
+/// Cascades from both sides: hiding is meaningless once either the message or the person is
+/// gone, and it owns nothing that should outlive them.
+model MessageHide {
+  id        String   @id @default(uuid(4)) @db.Uuid
+  messageId String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  /// Every history read filters by the reader, so this is the shape that query needs.
+  @@index([userId, messageId])
 }

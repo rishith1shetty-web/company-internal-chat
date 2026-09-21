@@ -8,6 +8,8 @@ import { DetailsPanel } from '@/components/chat/DetailsPanel';
 import { EmptyChatState } from '@/components/chat/EmptyChatState';
 import { MessageComposer } from '@/components/chat/MessageComposer';
 import { MessageList } from '@/components/chat/MessageList';
+import { DeleteDialog, ForwardDialog } from '@/components/chat/MessageDialogs';
+import { PinnedBanner } from '@/components/chat/PinnedBanner';
 import {
   AddMembersDialog,
   NewChatDialog,
@@ -22,6 +24,7 @@ import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen
 import { AppHeader } from '@/components/layout/AppHeader';
 import { BrandLockup } from '@/components/brand/Logo';
 import { hasNameCollision } from '@/lib/chat/format';
+import type { ChatMessage } from '@/lib/chat/types';
 import {
   conversationTitle,
   selectConversationListEntries,
@@ -113,6 +116,32 @@ export function ChatWorkspace() {
 
   const [openDialog, setOpenDialog] = useState<DialogName | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  /* -------------------------------------------------- message actions (Batch 1) -------------- */
+
+  /** The message a dialog is acting on. One piece of state per dialog, never a shared "mode". */
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  const [deleting, setDeleting] = useState<ChatMessage | null>(null);
+  const [forwardInFlight, setForwardInFlight] = useState(false);
+  /** Briefly outlines a message after jumping to it, so the eye can find it. */
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+
+  /**
+   * Scrolls to a message and flashes it.
+   *
+   * Only works for messages that are on screen — a quoted message from far back may not be
+   * loaded. Nothing happens in that case, deliberately: paging history backwards until it turns
+   * up could take many requests, and a jump that silently loads a thousand messages is worse
+   * than a jump that does nothing.
+   */
+  const jumpToMessage = useCallback((messageId: string) => {
+    const element = document.getElementById(`message-${messageId}`);
+    if (!element) return;
+
+    element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setHighlightedMessageId(messageId);
+    window.setTimeout(() => setHighlightedMessageId(null), 1600);
+  }, []);
   /*
    * Removing somebody from a group — or leaving one — is confirmed first.
    *
@@ -329,9 +358,26 @@ export function ChatWorkspace() {
                 onToggleDetails={() => setDetailsOverride(!detailsOpen)}
               />
 
+              <PinnedBanner
+                pinned={state.pinnedByConversation[selectedConversation.id] ?? []}
+                usersById={usersById}
+                currentUserId={currentUser.id}
+                onJump={jumpToMessage}
+                onUnpin={session.togglePin}
+              />
+
               <MessageList
                 messages={selectMessages(state, selectedConversation.id)}
                 currentUserId={currentUser.id}
+                highlightedMessageId={highlightedMessageId}
+                actions={{
+                  onReply: session.beginReply,
+                  onReact: session.toggleReaction,
+                  onForward: setForwarding,
+                  onTogglePin: session.togglePin,
+                  onRequestDelete: setDeleting,
+                  onJumpToMessage: jumpToMessage,
+                }}
                 usersById={usersById}
                 showSenderNames={selectedConversation.type === 'GROUP'}
                 conversationId={selectedConversation.id}
@@ -353,6 +399,10 @@ export function ChatWorkspace() {
                 onSendFile={session.sendFile}
                 uploading={uploads.some((upload) => upload.state === 'UPLOADING')}
                 maxFileSize={currentUser.maxFileSize}
+                replyTarget={session.replyTarget}
+                usersById={usersById}
+                currentUserId={currentUser.id}
+                onCancelReply={session.cancelReply}
               />
             </>
           ) : (
@@ -451,6 +501,41 @@ export function ChatWorkspace() {
         onTestSound={notifications.testSound}
         surface={desktopScope ? 'desktop' : 'browser'}
         onClose={closeDialog}
+      />
+
+      <ForwardDialog
+        open={forwarding !== null}
+        message={forwarding}
+        conversations={state.conversations}
+        usersById={usersById}
+        currentUserId={currentUser.id}
+        sending={forwardInFlight}
+        onClose={() => setForwarding(null)}
+        onConfirm={(conversationIds) => {
+          const message = forwarding;
+          if (!message) return;
+
+          setForwardInFlight(true);
+          void session.forwardTo(message, conversationIds).finally(() => {
+            setForwardInFlight(false);
+            setForwarding(null);
+          });
+        }}
+      />
+
+      <DeleteDialog
+        open={deleting !== null}
+        message={deleting}
+        isOwn={deleting?.senderId === currentUser.id}
+        onClose={() => setDeleting(null)}
+        onDeleteForMe={() => {
+          if (deleting) session.deleteForMe(deleting);
+          setDeleting(null);
+        }}
+        onDeleteForEveryone={() => {
+          if (deleting) session.deleteForEveryone(deleting);
+          setDeleting(null);
+        }}
       />
     </div>
   );

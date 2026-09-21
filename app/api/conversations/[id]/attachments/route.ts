@@ -217,7 +217,10 @@ export async function POST(
       await deleteStoredFile(config, storageKey);
       logger.debug('Duplicate upload suppressed', { userId: current.userId, conversationId });
     } else {
-      const wire = toMessageWire({ ...result.message, attachment: result.attachment });
+      const wire = toMessageWire(
+        { ...result.message, attachment: result.attachment },
+        result.viewerJoinedAt,
+      );
 
       /*
        * Metadata only. The bytes never travel over the socket — they are fetched over HTTP by
@@ -237,7 +240,10 @@ export async function POST(
     }
 
     return NextResponse.json(
-      toMessageWire({ ...result.message, attachment: result.attachment }) satisfies MessageWire,
+      toMessageWire(
+        { ...result.message, attachment: result.attachment },
+        result.viewerJoinedAt,
+      ) satisfies MessageWire,
       { status: result.duplicate ? 200 : 201 },
     );
   });

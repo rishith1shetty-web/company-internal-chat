@@ -24,7 +24,9 @@ export type SendMessageFailure =
   | 'NOT_A_MEMBER'
   | 'EMPTY_BODY'
   | 'BODY_TOO_LONG'
-  | 'CONVERSATION_NOT_FOUND';
+  | 'CONVERSATION_NOT_FOUND'
+  /** The reply target is not in this conversation, or not inside the sender's window. */
+  | 'REPLY_TARGET_INVALID';
 
 export class SendMessageError extends Error {
   readonly reason: SendMessageFailure;
@@ -43,6 +45,15 @@ export interface SendMessageInput {
   body: string;
   /** Browser-minted idempotency key. The one client-supplied id the design accepts, by design. */
   clientMessageId: string;
+  /**
+   * Batch 1: the message being replied to, if any.
+   *
+   * Verified, never trusted — `assertReplyTargetVisible` requires it to be in the SAME
+   * conversation and inside the sender's own D-03 window. Without that check a member could
+   * quote a message out of a conversation they have no access to, and the quoted text would be
+   * rendered to everyone here.
+   */
+  replyToId?: string | undefined;
 }
 
 /**
@@ -63,6 +74,22 @@ export interface StoredAttachment {
   createdAt: Date;
 }
 
+/** The message a reply points at, as stored. Gated per reader during serialization (D-03). */
+export interface StoredReplyTarget {
+  id: string;
+  senderId: string | null;
+  body: string | null;
+  createdAt: Date;
+  deletedAt: Date | null;
+  attachment: { originalFilename: string } | null;
+}
+
+/** One reaction row, before aggregation. */
+export interface StoredReaction {
+  emoji: string;
+  userId: string;
+}
+
 export interface StoredMessage {
   id: string;
   conversationId: string;
@@ -73,10 +100,21 @@ export interface StoredMessage {
   createdAt: Date;
   /** Present on `FILE` messages, null on the rest. */
   attachment: StoredAttachment | null;
+  /** Batch 1. Null when this message is not a reply, or the parent row is gone. */
+  replyTo: StoredReplyTarget | null;
+  isForwarded: boolean;
+  pinnedAt: Date | null;
+  deletedAt: Date | null;
+  reactions: StoredReaction[];
 }
 
 export interface SendMessageResult {
   message: StoredMessage;
+  /**
+   * The sender's own D-03 lower bound, so the caller can serialize the message for them without
+   * a second membership read. Serialization needs it because a reply quotes another message.
+   */
+  viewerJoinedAt: Date;
   /**
    * True when this call matched an existing row rather than inserting one — a retry after a
    * dropped acknowledgement. The caller must not broadcast again.
@@ -115,6 +153,14 @@ export async function sendMessage(
     throw new SendMessageError('NOT_A_MEMBER', 'You are not a member of this conversation.');
   }
 
+  if (input.replyToId !== undefined) {
+    await assertReplyTargetVisible(db, {
+      conversationId: input.conversationId,
+      joinedAt: membership.joinedAt,
+      replyToId: input.replyToId,
+    });
+  }
+
   try {
     const message = await db.$transaction(async (tx) => {
       const created = await tx.message.create({
@@ -125,6 +171,7 @@ export async function sendMessage(
           type: 'TEXT',
           body,
           clientMessageId: input.clientMessageId,
+          ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
         },
         select: messageSelection,
       });
@@ -139,7 +186,7 @@ export async function sendMessage(
       return created;
     });
 
-    return { message, duplicate: false };
+    return { message, viewerJoinedAt: membership.joinedAt, duplicate: false };
   } catch (error) {
     // The duplicate-send guard: unique (senderId, clientMessageId). A retry after a dropped
     // acknowledgement lands here, and the correct answer is the message that already exists —
@@ -155,14 +202,26 @@ export async function sendMessage(
         select: messageSelection,
       });
 
-      if (existing) return { message: existing, duplicate: true };
+      if (existing) {
+        return { message: existing, viewerJoinedAt: membership.joinedAt, duplicate: true };
+      }
     }
 
     throw error;
   }
 }
 
-const messageSelection = {
+/**
+ * Everything a message needs to render, in one query.
+ *
+ * The three joins here (attachment, reply target, reactions) are all bounded: one attachment per
+ * message, one parent, and at most one reaction row per member. Fetching them separately would
+ * turn a fifty-message page into a few hundred round trips for no benefit.
+ *
+ * `storageKey` is deliberately absent, here and in the reply target — a physical path has no
+ * route to a browser even by accident.
+ */
+export const messageSelection = {
   id: true,
   conversationId: true,
   senderId: true,
@@ -170,6 +229,9 @@ const messageSelection = {
   type: true,
   body: true,
   createdAt: true,
+  isForwarded: true,
+  pinnedAt: true,
+  deletedAt: true,
   attachment: {
     select: {
       id: true,
@@ -179,6 +241,20 @@ const messageSelection = {
       extension: true,
       createdAt: true,
     },
+  },
+  replyTo: {
+    select: {
+      id: true,
+      senderId: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      attachment: { select: { originalFilename: true } },
+    },
+  },
+  reactions: {
+    select: { emoji: true, userId: true },
+    orderBy: { createdAt: 'asc' },
   },
 } as const;
 
@@ -282,6 +358,8 @@ export interface MessagePage {
   messages: StoredMessage[];
   /** True when more messages exist beyond this page in the direction that was paged. */
   hasMore: boolean;
+  /** The reader's D-03 lower bound, which serialization needs to gate reply previews. */
+  viewerJoinedAt: Date;
 }
 
 /**
@@ -310,7 +388,19 @@ export async function listMessages(
   }
 
   const limit = clampHistoryLimit(input.limit);
-  const window = { conversationId: input.conversationId, createdAt: { gte: membership.joinedAt } };
+  /*
+   * The reader's visible window: their conversation, their D-03 lower bound, and — from Batch 1 —
+   * excluding anything they deleted for themselves.
+   *
+   * `hiddenFor: { none: ... }` filters in SQL rather than after the fact. Filtering in JavaScript
+   * would silently shorten pages (a page of 50 arriving as 47) and, worse, would make `hasMore`
+   * and the keyset cursor disagree with what was actually returned.
+   */
+  const window = {
+    conversationId: input.conversationId,
+    createdAt: { gte: membership.joinedAt },
+    hiddenFor: { none: { userId: input.userId } },
+  };
 
   if (input.after !== undefined) {
     const cursor = await loadCursor(db, input.conversationId, membership.joinedAt, input.after);
@@ -330,7 +420,11 @@ export async function listMessages(
     });
 
     const hasMore = messages.length > limit;
-    return { messages: hasMore ? messages.slice(0, limit) : messages, hasMore };
+    return {
+      messages: hasMore ? messages.slice(0, limit) : messages,
+      hasMore,
+      viewerJoinedAt: membership.joinedAt,
+    };
   }
 
   // Newest-first read, reversed before returning. `before` pages further back from a cursor;
@@ -360,7 +454,7 @@ export async function listMessages(
   const hasMore = newestFirst.length > limit;
   const page = hasMore ? newestFirst.slice(0, limit) : newestFirst;
 
-  return { messages: page.reverse(), hasMore };
+  return { messages: page.reverse(), hasMore, viewerJoinedAt: membership.joinedAt };
 }
 
 /**
@@ -392,4 +486,50 @@ async function loadCursor(
 function clampHistoryLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return HISTORY_DEFAULT_LIMIT;
   return Math.min(Math.max(Math.trunc(limit), 1), HISTORY_MAX_LIMIT);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/* Reply targets (Batch 1)                                                                         */
+/* --------------------------------------------------------------------------------------------- */
+
+/**
+ * Refuses a reply whose target the sender may not quote.
+ *
+ * A message id from a browser is a request, not a permission — exactly like a conversation id.
+ * Two conditions, and both matter:
+ *
+ *   1. **Same conversation.** Otherwise a member could quote a message out of a private
+ *      conversation into a group, and the quoted text would be rendered to everyone in it. The
+ *      foreign key cannot express this: it constrains the id to *a* message, not to one here.
+ *   2. **Inside the sender's own D-03 window.** A group member who joined today must not be able
+ *      to reach back past their join time by handing in an older id — the same rule
+ *      `loadCursor` applies to pagination, for the same reason.
+ *
+ * A message the sender has hidden for themselves is deliberately still a valid target: hiding is
+ * a personal view preference, not a loss of access, and the message is still in the conversation
+ * for everyone else.
+ *
+ * Deleted-for-everyone targets are allowed too. The reply renders "Message deleted", which is
+ * what the tombstone already says to everybody — refusing would be a pointless race with whoever
+ * deleted it a moment ago.
+ */
+export async function assertReplyTargetVisible(
+  db: PrismaClient,
+  input: { conversationId: string; joinedAt: Date; replyToId: string },
+): Promise<void> {
+  const target = await db.message.findFirst({
+    where: {
+      id: input.replyToId,
+      conversationId: input.conversationId,
+      createdAt: { gte: input.joinedAt },
+    },
+    select: { id: true },
+  });
+
+  if (!target) {
+    throw new SendMessageError(
+      'REPLY_TARGET_INVALID',
+      'That message is not available to reply to.',
+    );
+  }
 }

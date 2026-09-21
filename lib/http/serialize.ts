@@ -49,8 +49,15 @@ export function toConversationWire(conversation: ConversationSummary): Conversat
   };
 }
 
-export function toMessageWireFromRow(message: StoredMessage): MessageWire {
-  return toMessageWire(message);
+/**
+ * `viewerJoinedAt` is required rather than optional on purpose.
+ *
+ * It gates the quoted reply preview against the reader's D-03 window. An optional parameter with
+ * a permissive default would make "forgot to pass it" look exactly like "there is nothing to
+ * hide", and the failure would be silent disclosure rather than a type error.
+ */
+export function toMessageWireFromRow(message: StoredMessage, viewerJoinedAt: Date): MessageWire {
+  return toMessageWire(message, viewerJoinedAt);
 }
 
 /** Every distinct member id across a set of conversations, so their names can be resolved once. */

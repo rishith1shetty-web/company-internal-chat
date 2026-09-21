@@ -22,6 +22,7 @@
 import type { PrismaClient } from '../../prisma/generated/client';
 import { Prisma } from '../../prisma/generated/client';
 import { findActiveMembership } from '../authz/membership';
+import { assertReplyTargetVisible } from '../messages/service';
 
 /** Prisma's unique-constraint violation. */
 const UNIQUE_VIOLATION = 'P2002';
@@ -257,6 +258,13 @@ export interface CreateAttachmentInput {
   checksumSha256: string;
   /** Optional caption typed alongside the file. */
   body?: string | undefined;
+  /**
+   * Batch 1: the message being replied to, if the file is a reply.
+   *
+   * Verified by `assertReplyTargetVisible` exactly as a text reply is — same conversation, inside
+   * the sender's own window. Sending a file is not a way around that check.
+   */
+  replyToId?: string | undefined;
 }
 
 export interface CreateAttachmentResult {
@@ -272,6 +280,8 @@ export interface CreateAttachmentResult {
   attachment: AttachmentRecord;
   /** True when this matched an existing upload rather than creating one — a retried request. */
   duplicate: boolean;
+  /** The uploader's D-03 lower bound, so the caller can serialize without re-reading membership. */
+  viewerJoinedAt: Date;
 }
 
 /**
@@ -302,6 +312,14 @@ export async function createAttachmentMessage(
 
   const caption = input.body?.trim();
 
+  if (input.replyToId !== undefined) {
+    await assertReplyTargetVisible(db, {
+      conversationId: input.conversationId,
+      joinedAt: membership.joinedAt,
+      replyToId: input.replyToId,
+    });
+  }
+
   try {
     return await db.$transaction(async (tx) => {
       const message = await tx.message.create({
@@ -311,6 +329,7 @@ export async function createAttachmentMessage(
           type: 'FILE',
           body: caption && caption.length > 0 ? caption : null,
           clientMessageId: input.clientMessageId,
+          ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
         },
         select: {
           id: true,
@@ -344,7 +363,7 @@ export async function createAttachmentMessage(
         data: { lastMessageAt: message.createdAt },
       });
 
-      return { message, attachment, duplicate: false };
+      return { message, attachment, duplicate: false, viewerJoinedAt: membership.joinedAt };
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === UNIQUE_VIOLATION) {
@@ -369,7 +388,7 @@ export async function createAttachmentMessage(
 
       if (existing?.attachment) {
         const { attachment, ...message } = existing;
-        return { message, attachment, duplicate: true };
+        return { message, attachment, duplicate: true, viewerJoinedAt: membership.joinedAt };
       }
     }
 

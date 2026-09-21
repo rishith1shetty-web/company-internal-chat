@@ -19,6 +19,8 @@
  * failure — a membership change must still commit on a server with no socket layer.
  */
 
+import type { StoredMessage } from '../messages/service';
+
 export interface ConversationAudienceChange {
   conversationId: string;
   /**
@@ -50,9 +52,34 @@ export interface PostedMessage {
   message: unknown;
 }
 
+/**
+ * A message that already exists has changed — a reaction, a pin, or a delete-for-everyone
+ * (Batch 1).
+ *
+ * Carries the STORED row rather than a serialized wire, unlike `PostedMessage`. That is the whole
+ * point: an update can concern a message older than some members' D-03 window, and the quoted
+ * reply preview inside it has to be resolved per reader. The gateway therefore serializes this
+ * once per recipient and skips members who may not see the message at all.
+ *
+ * A type-only import, so this module still pulls nothing into the browser bundle at runtime.
+ */
+export interface MessageUpdate {
+  conversationId: string;
+  message: StoredMessage;
+}
+
+/** One person hid one message for themselves. Only their own sockets are told. */
+export interface MessageHidden {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+}
+
 export interface RealtimeNotifier {
   conversationChanged(change: ConversationAudienceChange): void;
   messagePosted(posted: PostedMessage): void;
+  messageUpdated(update: MessageUpdate): void;
+  messageHidden(hidden: MessageHidden): void;
 }
 
 const globalForRealtime = globalThis as unknown as {
@@ -96,4 +123,20 @@ export function notifyConversationChanged(change: ConversationAudienceChange): v
  */
 export function notifyMessagePosted(posted: PostedMessage): void {
   globalForRealtime.__companyChatNotifier?.messagePosted(posted);
+}
+
+/**
+ * Tells a conversation's members that one of its messages changed.
+ *
+ * Same contract as the rest of this module: called only after the change is committed, and a
+ * no-op when no gateway is attached. A browser that misses it converges on its next read, and
+ * every reconnection performs one.
+ */
+export function notifyMessageUpdated(update: MessageUpdate): void {
+  globalForRealtime.__companyChatNotifier?.messageUpdated(update);
+}
+
+/** Tells one person's other sockets that they hid a message. Nobody else is told. */
+export function notifyMessageHidden(hidden: MessageHidden): void {
+  globalForRealtime.__companyChatNotifier?.messageHidden(hidden);
 }

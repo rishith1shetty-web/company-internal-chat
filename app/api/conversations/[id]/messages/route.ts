@@ -64,7 +64,9 @@ export async function GET(
       });
 
       return NextResponse.json({
-        messages: page.messages.map(toMessageWireFromRow),
+        messages: page.messages.map((message) =>
+          toMessageWireFromRow(message, page.viewerJoinedAt),
+        ),
         hasMore: page.hasMore,
       } satisfies MessagePageWire);
     } catch (error) {

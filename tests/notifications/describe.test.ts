@@ -29,6 +29,11 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
     body: 'Can you review the report?',
     createdAt: '2026-09-02T10:15:00.000Z',
     attachment: null,
+    replyTo: null,
+    isForwarded: false,
+    pinnedAt: null,
+    deletedAt: null,
+    reactions: [],
     ...overrides,
   };
 }
