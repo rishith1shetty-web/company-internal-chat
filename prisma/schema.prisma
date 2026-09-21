@@ -301,6 +301,18 @@ model Message {
   /// lifecycle to a message in another conversation — the exact coupling that makes deleting an
   /// original break a copy. The copy is independent by construction.
   isForwarded Boolean   @default(false)
+  /// When the sender last edited this message's text (Batch 1.1). Null means never edited, which
+  /// is exactly what the interface checks before showing an "edited" label.
+  ///
+  /// THERE IS DELIBERATELY NO `editedById`. Only the original sender may edit their own message,
+  /// so the editor is always `senderId` — a second column would record a fact already stored, and
+  /// the two could then disagree. It is not indexed either: nothing queries by it, every read
+  /// merely selects it.
+  ///
+  /// Editing changes `body` and this column and NOTHING else: not `createdAt`, not the sender, not
+  /// the conversation, not the reply target, not the forward flag, and not
+  /// `Conversation.lastMessageAt` — an edit is not a new message and must not behave like one.
+  editedAt    DateTime? @db.Timestamptz(3)
   /// Non-null when this message is pinned in its conversation. Pinning is conversation-level and
   /// visible to every member, so it lives on the message rather than per user.
   pinnedAt    DateTime? @db.Timestamptz(3)

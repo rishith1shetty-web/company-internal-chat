@@ -4,7 +4,15 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 
 import { Button, IconButton } from '@/components/ui/Button';
-import { AttachmentIcon, CloseIcon, FileIcon, ReplyIcon, SendIcon } from '@/components/ui/icons';
+import {
+  AttachmentIcon,
+  CheckIcon,
+  CloseIcon,
+  EditIcon,
+  FileIcon,
+  ReplyIcon,
+  SendIcon,
+} from '@/components/ui/icons';
 import { formatFileSize } from '@/lib/chat/format';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
@@ -23,6 +31,16 @@ interface MessageComposerProps {
   usersById: Map<string, UserSummary>;
   currentUserId: string;
   onCancelReply(): void;
+  /**
+   * The message being edited, or null (Batch 1.1).
+   *
+   * Never set at the same time as `replyTarget` — the session keeps the two mutually exclusive, so
+   * this component never has to decide which banner wins.
+   */
+  editTarget: ChatMessage | null;
+  onCancelEdit(): void;
+  /** Saves the edited text. Resolves true when the server accepted it. */
+  onSaveEdit(body: string): Promise<boolean>;
 }
 
 /** Show the character counter only when the limit is close enough to matter. */
@@ -38,6 +56,9 @@ export function MessageComposer({
   usersById,
   currentUserId,
   onCancelReply,
+  editTarget,
+  onCancelEdit,
+  onSaveEdit,
 }: MessageComposerProps) {
   const [body, setBody] = useState('');
   /*
@@ -49,8 +70,67 @@ export function MessageComposer({
    */
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  /** True while a save is in flight, so Save cannot be pressed twice. */
+  const [saving, setSaving] = useState(false);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const editing = editTarget !== null;
+  const editingId = editTarget?.id ?? null;
+
+  /*
+   * Mirrors of the current body and the current target, so the prefill effect below can READ them
+   * without DEPENDING on them.
+   *
+   * That distinction is the whole reason these exist. An effect that listed `body` in its
+   * dependencies would re-run on every keystroke; one that listed `editTarget` would re-run every
+   * time a `message:updated` arrived for that message — and either would overwrite what the user
+   * is in the middle of typing with the text the message used to have.
+   *
+   * They are written in an effect rather than during render, and this effect is declared FIRST on
+   * purpose: effects run in declaration order, so by the time the prefill effect below runs, these
+   * already hold the values from the render that triggered it.
+   */
+  const bodyRef = useRef(body);
+  const editTargetRef = useRef(editTarget);
+  const draftBeforeEdit = useRef('');
+  const previousEditingId = useRef<string | null>(null);
+
+  useEffect(() => {
+    bodyRef.current = body;
+    editTargetRef.current = editTarget;
+  });
+
+  /*
+   * Entering and leaving edit mode.
+   *
+   * Keyed on the message id alone, so it fires exactly twice per edit — once on entry, once on
+   * exit — and never in between.
+   *
+   *   Entering: whatever was half-typed is stashed, and the message's current text takes its place.
+   *   Leaving:  the stash comes back, whether the edit was saved or cancelled. Somebody who was
+   *             part-way through a sentence, edited an older message, then came back finds their
+   *             sentence still there.
+   *
+   * Switching straight from editing one message to editing another does not re-stash: the draft
+   * being held is the ordinary composer text, not the previous edit.
+   */
+  useEffect(() => {
+    const previous = previousEditingId.current;
+    previousEditingId.current = editingId;
+
+    if (editingId === null) {
+      if (previous !== null) {
+        setBody(draftBeforeEdit.current);
+        draftBeforeEdit.current = '';
+      }
+      return;
+    }
+
+    if (previous === null) draftBeforeEdit.current = bodyRef.current;
+    setBody(editTargetRef.current?.body ?? '');
+    textAreaRef.current?.focus();
+  }, [editingId]);
 
   // Grow with the text, up to a ceiling, then scroll inside the field.
   useEffect(() => {
@@ -62,8 +142,21 @@ export function MessageComposer({
 
   const trimmed = body.trim();
   const tooLong = body.length > MAX_MESSAGE_LENGTH;
+
+  /*
+   * What "Save" is allowed to do, which is not the same as what "Send" is allowed to do.
+   *
+   * Emptying the text is legitimate for a file message — it clears the caption and leaves the
+   * file, which is exactly what sending a file without typing anything produces. Emptying a text
+   * message is not: there would be nothing left, and deleting is the action for that. The server
+   * applies the same rule and is the one that decides.
+   */
+  const canSaveEdit =
+    !saving && !tooLong && (trimmed.length > 0 || editTarget?.attachment != null);
   // A file on its own is a message; so is text on its own; so is both together.
-  const canSend = !uploading && !tooLong && (trimmed.length > 0 || file !== null);
+  const canSend = editing
+    ? canSaveEdit
+    : !uploading && !tooLong && (trimmed.length > 0 || file !== null);
 
   const chooseFile = (chosen: File | null) => {
     setFileError(null);
@@ -100,6 +193,19 @@ export function MessageComposer({
     event?.preventDefault();
     if (!canSend) return;
 
+    /*
+     * Editing takes over the composer entirely: no file is sent, and no new message is created.
+     *
+     * The body is NOT cleared here. Edit mode is left only when the save succeeds — the session
+     * clears `editTarget`, which is what restores the composer — so a failure leaves the banner,
+     * the text and the cursor exactly where they were, ready to try again.
+     */
+    if (editing) {
+      setSaving(true);
+      void onSaveEdit(trimmed).finally(() => setSaving(false));
+      return;
+    }
+
     if (file) {
       onSendFile(file, trimmed.length > 0 ? trimmed : undefined);
       clearFile();
@@ -124,6 +230,14 @@ export function MessageComposer({
     if (event.key === 'Escape' && replyTarget) {
       event.preventDefault();
       onCancelReply();
+      return;
+    }
+
+    // The same for an edit. Leaving edit mode puts back whatever was being typed before it began,
+    // so Escape here costs nothing that was not already the message's own text.
+    if (event.key === 'Escape' && editing) {
+      event.preventDefault();
+      onCancelEdit();
     }
   };
 
@@ -146,6 +260,31 @@ export function MessageComposer({
           aria-hidden="true"
           tabIndex={-1}
         />
+
+        {/*
+          The editing banner.
+
+          Deliberately the same shape and weight as the reply banner below: they occupy the same
+          place, do the same job — telling you the Send button does not mean what it usually does —
+          and are never both on screen, because the session keeps the two modes exclusive.
+
+          The current text is shown underneath rather than the new one: it is what the message says
+          now, and the composer already shows what it would say instead.
+        */}
+        {editTarget ? (
+          <div className="mb-2 flex animate-rise-in items-center gap-2 rounded-card border border-accent/20 bg-accent-tint px-3 py-2">
+            <EditIcon className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] font-semibold text-brand">Editing message</span>
+              <span className="block truncate text-xs text-ink-muted">
+                {editTarget.body?.trim() || editTarget.attachment?.filename || 'Attachment'}
+              </span>
+            </span>
+            <IconButton label="Cancel edit" onClick={onCancelEdit}>
+              <CloseIcon className="h-4 w-4" />
+            </IconButton>
+          </div>
+        ) : null}
 
         {/*
           The reply banner.
@@ -174,7 +313,7 @@ export function MessageComposer({
           </div>
         ) : null}
 
-        {file ? (
+        {file && !editing ? (
           <div className="mb-2 flex animate-rise-in items-center gap-3 rounded-card border border-accent/20 bg-accent-tint px-3 py-2.5 shadow-subtle">
             <span
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-surface text-brand ring-1 ring-line"
@@ -215,10 +354,15 @@ export function MessageComposer({
             'focus-within:border-accent focus-within:bg-surface focus-within:ring-4 focus-within:ring-accent/12'
           }
         >
+          {/*
+            No attaching while editing. An edit changes text; replacing a file is a different
+            thing entirely, and the server has no route for it (`editMessage` writes `body` and
+            `editedAt`, nothing else).
+          */}
           <IconButton
             label="Attach a file"
             onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
+            disabled={uploading || editing}
             className="shrink-0"
           >
             <AttachmentIcon />
@@ -235,7 +379,11 @@ export function MessageComposer({
             onChange={(event) => setBody(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder={
-              file ? 'Add a message with the file (optional)' : `Message ${conversationTitle}`
+              editing
+                ? 'Edit your message'
+                : file
+                  ? 'Add a message with the file (optional)'
+                  : `Message ${conversationTitle}`
             }
             /* The parent keys this component by conversation, so opening one focuses a fresh field. */
             autoFocus
@@ -256,16 +404,26 @@ export function MessageComposer({
             disabled={!canSend}
             className="mb-0.5 shrink-0"
           >
-            <SendIcon className="h-4 w-4" />
-            {uploading ? 'Sending…' : 'Send'}
+            {editing ? <CheckIcon className="h-4 w-4" /> : <SendIcon className="h-4 w-4" />}
+            {editing ? (saving ? 'Saving…' : 'Save') : uploading ? 'Sending…' : 'Send'}
           </Button>
         </div>
 
         <div className="mt-2 flex items-center justify-between gap-3">
           <p id="composer-hint" className="text-xs text-ink-subtle">
-            <kbd className="font-sans font-medium text-ink-muted">Enter</kbd> sends ·{' '}
-            <kbd className="font-sans font-medium text-ink-muted">Shift + Enter</kbd> adds a line ·
-            any file up to {formatFileSize(maxFileSize)}
+            {editing ? (
+              <>
+                <kbd className="font-sans font-medium text-ink-muted">Enter</kbd> saves ·{' '}
+                <kbd className="font-sans font-medium text-ink-muted">Shift + Enter</kbd> adds a
+                line · <kbd className="font-sans font-medium text-ink-muted">Esc</kbd> cancels
+              </>
+            ) : (
+              <>
+                <kbd className="font-sans font-medium text-ink-muted">Enter</kbd> sends ·{' '}
+                <kbd className="font-sans font-medium text-ink-muted">Shift + Enter</kbd> adds a
+                line · any file up to {formatFileSize(maxFileSize)}
+              </>
+            )}
           </p>
           {body.length >= COUNTER_VISIBLE_FROM ? (
             <p className={tooLong ? 'text-xs font-medium text-danger' : 'text-xs text-ink-subtle'}>

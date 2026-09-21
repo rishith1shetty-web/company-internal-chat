@@ -372,6 +372,7 @@ export function ChatWorkspace() {
                 highlightedMessageId={highlightedMessageId}
                 actions={{
                   onReply: session.beginReply,
+                  onEdit: session.beginEdit,
                   onReact: session.toggleReaction,
                   onForward: setForwarding,
                   onTogglePin: session.togglePin,
@@ -403,6 +404,9 @@ export function ChatWorkspace() {
                 usersById={usersById}
                 currentUserId={currentUser.id}
                 onCancelReply={session.cancelReply}
+                editTarget={session.editTarget}
+                onCancelEdit={session.cancelEdit}
+                onSaveEdit={session.saveEdit}
               />
             </>
           ) : (

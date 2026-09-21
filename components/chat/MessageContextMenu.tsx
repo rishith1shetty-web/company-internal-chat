@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import {
   CopyIcon,
+  EditIcon,
   EmojiIcon,
   ForwardIcon,
   PinIcon,
@@ -17,7 +18,7 @@ import { cn } from '@/lib/ui/cn';
 const EDGE_MARGIN = 8;
 
 export interface MessageMenuAction {
-  key: 'reply' | 'copy' | 'react' | 'forward' | 'pin' | 'delete';
+  key: 'reply' | 'copy' | 'edit' | 'react' | 'forward' | 'pin' | 'delete';
   label: string;
   /** Hidden entirely rather than disabled: a greyed row invites a click that cannot work. */
   available: boolean;
@@ -212,6 +213,7 @@ function MenuIconFor({ action }: { action: MessageMenuAction['key'] }) {
 
   if (action === 'reply') return <ReplyIcon className={className} />;
   if (action === 'copy') return <CopyIcon className={className} />;
+  if (action === 'edit') return <EditIcon className={className} />;
   if (action === 'react') return <EmojiIcon className={className} />;
   if (action === 'forward') return <ForwardIcon className={className} />;
   if (action === 'pin') return <PinIcon className={className} />;

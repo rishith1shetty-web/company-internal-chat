@@ -123,6 +123,13 @@ export interface MessageWire {
   replyTo: ReplyPreviewWire | null;
   /** True when this message was forwarded from another conversation. */
   isForwarded: boolean;
+  /**
+   * ISO-8601 UTC when the sender last edited the text; null when it has never been edited.
+   *
+   * Null is also what a tombstone carries: a deleted message shows "This message was deleted", and
+   * whether it had been edited first is neither useful nor anybody's business.
+   */
+  editedAt: string | null;
   /** ISO-8601 UTC when pinned in this conversation; null when not pinned. */
   pinnedAt: string | null;
   /** ISO-8601 UTC when deleted for everyone. Non-null means render the tombstone. */

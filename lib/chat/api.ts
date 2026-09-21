@@ -373,6 +373,25 @@ export function setMessagePinned(
   });
 }
 
+/**
+ * Rewrites the text of a message this user sent (Batch 1.1).
+ *
+ * PATCH on the message itself rather than another `/:id/<verb>` route: editing changes the
+ * message's own representation, which is what PATCH is for. The request carries the new text and
+ * nothing else — there is no field in it that could name a sender, a conversation or a timestamp,
+ * and the server refuses the request outright if one appears.
+ *
+ * An empty string is a legitimate value: it clears the caption of a file message. The server
+ * decides whether that is allowed for the message in question, and refuses it for a text message.
+ */
+export function editMessage(messageId: string, body: string): Promise<MessageMutationWire> {
+  return request<MessageMutationWire>(`/api/messages/${encodeURIComponent(messageId)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+}
+
 /** The pinned messages of a conversation, newest pin first. */
 export function fetchPinnedMessages(conversationId: string): Promise<PinnedMessagesWire> {
   return request<PinnedMessagesWire>(

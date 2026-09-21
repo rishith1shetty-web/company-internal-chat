@@ -15,6 +15,7 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { listConversationsForUser } from '@/lib/conversations/service';
 import {
   deleteMessageForEveryone,
+  editMessage,
   hideMessageForUser,
   setPinned,
   setReaction,
@@ -102,6 +103,68 @@ suite('message actions over the socket', () => {
     expect(wire.reactions).toEqual([
       { emoji: '👍', count: 1, userIds: [alice.userId] },
     ]);
+  });
+
+  it('delivers an edit to the other member as message:updated (Batch 1.1)', async () => {
+    const alice = await createTestIdentity('Alice EditRT');
+    const bob = await createTestIdentity('Bob EditRT');
+    const conversationId = await seedDirectConversation(alice.userId, bob.userId);
+
+    const bobSocket = await open(bob.cookie);
+    await waitForReady(bobSocket);
+
+    const { message } = await send(conversationId, alice.userId, 'the first wording');
+
+    /*
+     * `message:updated`, not `message:new`, and that distinction is the whole point.
+     *
+     * The client feeds `message:new` to the notification policy and `message:updated` to the
+     * reducer — so an edit arriving on the wrong event would make somebody's colleague appear to
+     * have messaged them again: a sound, a toast, a badge, and the conversation jumping to the
+     * top of the list for a message they had already read.
+     */
+    const updated = waitForEvent(bobSocket, 'message:updated');
+    const result = await editMessage(db(), {
+      userId: alice.userId,
+      messageId: message.id,
+      body: 'the second wording',
+    });
+    notifyMessageUpdated({ conversationId, message: result.message });
+
+    const wire = (await updated) as MessageWire;
+    // The same message, changed in place: same id, same created time, new text.
+    expect(wire.id).toBe(message.id);
+    expect(wire.createdAt).toBe(message.createdAt.toISOString());
+    expect(wire.body).toBe('the second wording');
+    expect(wire.editedAt).not.toBeNull();
+  });
+
+  it('an edit raises no unread, moves nothing, and sends no new message', async () => {
+    const alice = await createTestIdentity('Alice EditQuiet');
+    const bob = await createTestIdentity('Bob EditQuiet');
+    const conversationId = await seedDirectConversation(alice.userId, bob.userId);
+
+    const bobSocket = await open(bob.cookie);
+    await waitForReady(bobSocket);
+
+    const { message } = await send(conversationId, alice.userId, 'something said once');
+    const before = await conversationFor(bob.userId, conversationId);
+
+    const noNewMessage = expectNoEvent(bobSocket, 'message:new');
+    const result = await editMessage(db(), {
+      userId: alice.userId,
+      messageId: message.id,
+      body: 'something said once, corrected',
+    });
+    notifyMessageUpdated({ conversationId, message: result.message });
+
+    // Nothing arrives on the event that would announce it.
+    await noNewMessage;
+
+    const after = await conversationFor(bob.userId, conversationId);
+    expect(after?.unreadCount).toBe(before?.unreadCount);
+    expect(after?.lastMessageAt?.getTime()).toBe(before?.lastMessageAt?.getTime());
+    expect(await db().message.count({ where: { conversationId } })).toBe(1);
   });
 
   it('delivers a pin, and then an unpin, to the other member', async () => {

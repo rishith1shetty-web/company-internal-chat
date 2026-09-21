@@ -23,7 +23,7 @@
  * assignment is an administrator's job (docs/12-admin-device-identity.md).
  */
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import {
   ApiError,
@@ -40,6 +40,7 @@ import {
   startDirectConversation as requestDirectConversation,
   clearReaction as clearMessageReaction,
   deleteMessageForEveryone as removeMessageForEveryone,
+  editMessage as requestMessageEdit,
   deleteMessageForMe as hideMessage,
   fetchPinnedMessages,
   forwardMessage as sendForward,
@@ -90,6 +91,26 @@ export interface ChatSession {
   replyTarget: ChatMessage | null;
   beginReply(message: ChatMessage): void;
   cancelReply(): void;
+  /* ------------------------------------------------ edit message (Batch 1.1) ---------------- */
+  /**
+   * The message being edited, or null.
+   *
+   * A snapshot taken when Edit was chosen: it is what seeds the composer, not a live view. The
+   * live row stays in `state`, and the effect below cancels edit mode if it stops being editable.
+   *
+   * Edit and reply are mutually exclusive, and that is enforced here rather than in the composer —
+   * one place where the two can never both be set beats two components agreeing to keep them apart.
+   */
+  editTarget: ChatMessage | null;
+  beginEdit(message: ChatMessage): void;
+  cancelEdit(): void;
+  /**
+   * Saves the edited text. Resolves true when the server accepted it.
+   *
+   * Edit mode is left only on success: a save that fails keeps the banner and the typing, so the
+   * user can correct it and try again rather than losing what they wrote.
+   */
+  saveEdit(body: string): Promise<boolean>;
   /**
    * Adds, changes or removes this user's reaction — one call, because one person has at most one
    * reaction per message. Tapping the emoji already chosen removes it.
@@ -381,6 +402,15 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
    * not a conflict to reconcile.
    */
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  /**
+   * Which message is being edited, as an id — not as a snapshot of it.
+   *
+   * The message itself is DERIVED from state below. That is what makes edit mode impossible to
+   * leave stale: a message deleted for everyone, hidden, or dropped from the loaded history stops
+   * satisfying the derivation and edit mode ends by itself, with no effect watching for it and no
+   * second copy of the row to fall out of step with the first.
+   */
+  const [editing, setEditing] = useState<{ id: string; conversationId: string } | null>(null);
 
   const syncPresence = useCallback(async () => {
     const response = await socketRef.current?.syncPresence();
@@ -605,8 +635,10 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       void loadAttachments(conversationId);
       void loadPins(conversationId);
       // A reply belongs to the conversation it was started in. Carrying it into another one would
-      // quote a message that is not there.
+      // quote a message that is not there. The same is true of an edit in progress — and worse,
+      // because saving it would rewrite a message the user is no longer looking at.
       setReplyTarget(null);
+      setEditing(null);
     },
     [loadAttachments, loadHistory, loadPins],
   );
@@ -974,9 +1006,91 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     // A tombstone has nothing to quote.
     if (message.deletedAt !== null) return;
     setReplyTarget(message);
+    // Replying replaces editing, cleanly. Both banners at once would leave the Send button with
+    // two meanings and the user with no way to tell which one it has.
+    setEditing(null);
   }, []);
 
   const cancelReply = useCallback(() => setReplyTarget(null), []);
+
+  /* ------------------------------------------------- edit message (Batch 1.1) --------------- */
+
+  /**
+   * Enters edit mode for a message this user sent.
+   *
+   * The same conditions the menu uses, re-checked here so that entering edit mode by any other
+   * route still cannot begin on something uneditable. None of this is the control — the server
+   * re-derives every one of these from the stored row (`lib/messages/actions.ts`).
+   */
+  const beginEdit = useCallback(
+    (message: ChatMessage) => {
+      if (message.deletedAt !== null) return;
+      if (message.kind === 'SYSTEM') return;
+      if (message.senderId === null || message.senderId !== currentUserId) return;
+      // Nothing to edit: a file sent without a caption. Adding one afterwards is a different
+      // feature, and the server refuses it too.
+      if (!message.body?.trim()) return;
+
+      setEditing({ id: message.id, conversationId: message.conversationId });
+      // Editing replaces replying, for the same reason as above.
+      setReplyTarget(null);
+    },
+    [currentUserId],
+  );
+
+  const cancelEdit = useCallback(() => setEditing(null), []);
+
+  /**
+   * The message being edited, resolved live from state rather than remembered.
+   *
+   * EDIT MODE CANNOT OUTLIVE ITS MESSAGE, and this is how. Another device — or another person,
+   * with a delete-for-everyone — can remove the message while this browser has it open in the
+   * composer. Because the target is looked up on every render instead of being held as a copy, it
+   * simply stops resolving: `editTarget` becomes null, the banner goes, and the composer returns
+   * to normal. There is no effect racing the change and no stale snapshot to write text onto.
+   *
+   * A concurrent EDIT is deliberately NOT cancelled. The row's text changed underneath, but the
+   * message is still there and still theirs; the composer holds what they have typed and their
+   * save wins. Throwing their words away to adopt somebody else's would be the worse answer.
+   */
+  const editTarget = useMemo<ChatMessage | null>(() => {
+    if (!editing) return null;
+
+    const live = state.messagesByConversation[editing.conversationId]?.find(
+      (message) => message.id === editing.id,
+    );
+
+    if (!live || live.deletedAt !== null || live.kind === 'SYSTEM') return null;
+    return live;
+  }, [editing, state.messagesByConversation]);
+
+  /**
+   * Saves the edited text.
+   *
+   * The response is applied locally as well as broadcast: the actor's own window updates even if
+   * their socket is briefly down, and the server remains the authority either way.
+   *
+   * Edit mode is cleared ONLY on success. A failed save keeps the banner and whatever was typed,
+   * which is the difference between "try that again" and "type all of that again".
+   */
+  const saveEdit = useCallback(
+    async (body: string): Promise<boolean> => {
+      const target = editTarget;
+      if (!target) return false;
+
+      try {
+        const result = await requestMessageEdit(target.id, body);
+        dispatch({ type: 'message-updated', message: result.message });
+        setEditing(null);
+        return true;
+      } catch (error) {
+        handleFailure(error, 'That message could not be edited.');
+        return false;
+      }
+    },
+    [editTarget, handleFailure],
+  );
+
 
   /**
    * Adds, changes or removes this user's reaction.
@@ -1102,6 +1216,10 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     replyTarget,
     beginReply,
     cancelReply,
+    editTarget,
+    beginEdit,
+    cancelEdit,
+    saveEdit,
     toggleReaction,
     togglePin,
     deleteForMe,

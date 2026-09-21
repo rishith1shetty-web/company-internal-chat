@@ -209,6 +209,7 @@ export function toMessageWire(
     body: string | null;
     createdAt: Date;
     isForwarded?: boolean;
+    editedAt?: Date | null;
     pinnedAt?: Date | null;
     deletedAt?: Date | null;
     attachment?: {
@@ -256,6 +257,9 @@ export function toMessageWire(
         : null,
     replyTo: toReplyPreview(message.replyTo ?? null, viewerJoinedAt),
     isForwarded: message.isForwarded ?? false,
+    // Nulled under a tombstone alongside the body: "This message was deleted, and it had been
+    // edited" tells a reader nothing they can use about a message that no longer says anything.
+    editedAt: deleted ? null : (message.editedAt?.toISOString() ?? null),
     pinnedAt: message.pinnedAt?.toISOString() ?? null,
     deletedAt: message.deletedAt?.toISOString() ?? null,
     reactions: aggregateReactions(message.reactions ?? []),

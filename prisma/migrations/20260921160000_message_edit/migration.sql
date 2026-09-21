@@ -1,0 +1,21 @@
+-- UPDATE BATCH 1.1 — edit message.
+--
+-- ONE ADDITIVE STATEMENT. A nullable column, no default, no backfill, no constraint, no index,
+-- no other table touched.
+--
+-- WHY EVERY EXISTING ROW SURVIVES UNCHANGED. `ADD COLUMN` with no `DEFAULT` and no `NOT NULL` is
+-- metadata-only on PostgreSQL 11+: the table is not rewritten, no existing value is read or
+-- written, and every message that exists before this runs simply has `editedAt` NULL — which is
+-- precisely what "never edited" means, so the data is correct without touching a single row.
+-- Nothing here can alter `body`, `createdAt`, `senderId` or any other column.
+--
+-- WHY THERE IS NO `editedById`. Only the original sender may edit their own message, so the
+-- editor is always `senderId` and is already recorded. A second column would store a fact the
+-- row already carries and give it somewhere to disagree with itself.
+--
+-- BACKWARDS COMPATIBLE IN BOTH DIRECTIONS. The previous application version never selects and
+-- never writes this column, so this migration may be applied BEFORE the new server build is
+-- deployed, and the old build can be rolled back to without reverting it.
+
+-- AlterTable
+ALTER TABLE "Message" ADD COLUMN     "editedAt" TIMESTAMPTZ(3);

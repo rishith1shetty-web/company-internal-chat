@@ -103,6 +103,8 @@ export interface StoredMessage {
   /** Batch 1. Null when this message is not a reply, or the parent row is gone. */
   replyTo: StoredReplyTarget | null;
   isForwarded: boolean;
+  /** Batch 1.1. Non-null once the sender edited the text; null means never edited. */
+  editedAt: Date | null;
   pinnedAt: Date | null;
   deletedAt: Date | null;
   reactions: StoredReaction[];
@@ -230,6 +232,7 @@ export const messageSelection = {
   body: true,
   createdAt: true,
   isForwarded: true,
+  editedAt: true,
   pinnedAt: true,
   deletedAt: true,
   attachment: {

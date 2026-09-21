@@ -33,7 +33,7 @@ import {
   type StorageConfig,
   type StoredFile,
 } from '../files/storage';
-import { messageSelection, type StoredMessage } from './service';
+import { MAX_MESSAGE_LENGTH, messageSelection, type StoredMessage } from './service';
 
 /** Prisma's unique-constraint violation. */
 const UNIQUE_VIOLATION = 'P2002';
@@ -63,7 +63,11 @@ export type MessageActionFailure =
   | 'NOT_ACTIONABLE'
   | 'INVALID_EMOJI'
   /** Forwarding was asked for with no usable destination. */
-  | 'NO_DESTINATIONS';
+  | 'NO_DESTINATIONS'
+  /** An edit that would leave a text message with nothing in it (Batch 1.1). */
+  | 'EMPTY_BODY'
+  /** An edit past `MAX_MESSAGE_LENGTH` (Batch 1.1). */
+  | 'BODY_TOO_LONG';
 
 export class MessageActionError extends Error {
   readonly reason: MessageActionFailure;
@@ -290,6 +294,132 @@ export async function listPinnedMessages(
   });
 
   return { membership, messages };
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/* Editing (Batch 1.1)                                                                             */
+/* --------------------------------------------------------------------------------------------- */
+
+/**
+ * Rewrites the text of a message the caller sent.
+ *
+ * ONLY THE ORIGINAL SENDER, and only the text. Editing is the one action here that changes what a
+ * message *says*, so it is also the one where getting authorization wrong rewrites history in
+ * somebody else's name — which is why the rules below are checked twice: once as ordinary
+ * preconditions, and again inside the `where` of the write itself.
+ *
+ * THE RULES, in the order they are applied:
+ *
+ *   1. `loadAccessibleMessage` — the message exists, the caller is an active member of ITS
+ *      conversation, and it is inside their D-03 window. One answer for all three.
+ *   2. Not a `SYSTEM` message. Those are the server's own record of what happened to a group;
+ *      nobody may put words in the server's mouth.
+ *   3. Not a tombstone. Delete-for-everyone cleared the text, and an edit must not resurrect it.
+ *   4. The caller is the stored `senderId`. Read from the row, never from the request.
+ *   5. There is text to edit. A file sent with no caption offers nothing to change — adding a
+ *      caption after the fact would be a different feature, and this is deliberately not it. The
+ *      interface hides Edit in exactly this case, and the server agrees rather than being more
+ *      permissive than the menu.
+ *
+ * WHAT AN EDIT WRITES: `body` and `editedAt`. That is the entire `data` clause, so there is no
+ * code path here by which a request could reach `senderId`, `createdAt`, `conversationId`,
+ * `replyToId`, `isForwarded`, `pinnedAt`, `deletedAt` or an attachment — mass assignment is
+ * prevented by there being nothing to assign, not by a list of fields to ignore.
+ *
+ * WHAT IT DELIBERATELY DOES NOT TOUCH: `Conversation.lastMessageAt`. An edit is not a new message.
+ * Bumping it would reorder the sidebar, change the unread reckoning and make an edit to something
+ * said last week arrive like a fresh one. Reactions, pins, hides, replies and the attachment are
+ * all untouched for the same reason — none of them is what changed.
+ *
+ * THE WRITE IS GUARDED, not merely preceded by checks. `updateMany` with `senderId` and
+ * `deletedAt: null` in its `where` means a message deleted for everyone in the moment between the
+ * read and the write is not edited at all: the delete wins, the count comes back 0, and the caller
+ * is told the message is gone. A `update` by id would have quietly written text onto a tombstone.
+ */
+export async function editMessage(
+  db: PrismaClient,
+  input: { userId: string; messageId: string; body: string },
+): Promise<MessageActionResult> {
+  const { message, membership } = await loadAccessibleMessage(db, input.userId, input.messageId);
+
+  if (message.type === 'SYSTEM') {
+    throw new MessageActionError('NOT_ACTIONABLE', 'That message cannot be edited.');
+  }
+  if (message.deletedAt !== null) {
+    throw new MessageActionError('NOT_ACTIONABLE', 'A deleted message cannot be edited.');
+  }
+  if (message.senderId === null || message.senderId !== input.userId) {
+    throw new MessageActionError(
+      'NOT_THE_SENDER',
+      'Only the person who sent a message can edit it.',
+    );
+  }
+
+  const current = message.body?.trim() ?? '';
+  if (current.length === 0) {
+    throw new MessageActionError('NOT_ACTIONABLE', 'That message has no text to edit.');
+  }
+
+  // The same normalisation `sendMessage` applies, so an edited message is stored exactly as a
+  // newly sent one would be. The text is stored as text and rendered as text — nothing here
+  // parses, interprets or escapes it, which is why there is no markup to inject (docs/04 §XSS).
+  const body = input.body.trim();
+
+  if (body.length > MAX_MESSAGE_LENGTH) {
+    throw new MessageActionError(
+      'BODY_TOO_LONG',
+      `A message may be at most ${MAX_MESSAGE_LENGTH} characters.`,
+    );
+  }
+
+  /*
+   * Clearing the text is allowed only when something is left behind.
+   *
+   * A `FILE` message is still a message with its file gone from the caption — the model already
+   * supports an attachment with no caption, because that is what sending a file without typing
+   * anything produces. A `TEXT` message with no text is not a message at all, so emptying one is
+   * refused rather than silently turned into a blank bubble; deleting is the action for that.
+   *
+   * The attachment's status is checked, not merely its existence: bytes removed by a
+   * delete-for-everyone elsewhere would leave nothing behind after all.
+   */
+  let nextBody: string | null = body;
+  if (body.length === 0) {
+    const attachment =
+      message.type === 'FILE'
+        ? await db.attachment.findUnique({
+            where: { messageId: input.messageId },
+            select: { status: true },
+          })
+        : null;
+
+    if (!attachment || attachment.status !== 'READY') {
+      throw new MessageActionError('EMPTY_BODY', 'A message cannot be empty.');
+    }
+    nextBody = null;
+  }
+
+  /*
+   * Saving without having changed anything is a no-op, not an edit.
+   *
+   * Stamping `editedAt` here would put a permanent "edited" label on a message whose text is
+   * exactly what it always was — visible to everybody, and impossible for the sender to take back.
+   */
+  if ((message.body ?? null) === nextBody) {
+    return { message: await readMessageForWire(db, input.messageId), membership };
+  }
+
+  const updated = await db.message.updateMany({
+    where: { id: input.messageId, senderId: input.userId, deletedAt: null },
+    data: { body: nextBody, editedAt: new Date() },
+  });
+
+  // Nothing matched: the message was deleted for everyone between the read above and this write.
+  if (updated.count === 0) {
+    throw new MessageActionError('NOT_ACTIONABLE', 'A deleted message cannot be edited.');
+  }
+
+  return { message: await readMessageForWire(db, input.messageId), membership };
 }
 
 /* --------------------------------------------------------------------------------------------- */

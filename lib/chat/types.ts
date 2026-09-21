@@ -150,6 +150,8 @@ export interface ChatMessage {
   replyTo: ReplyPreview | null;
   /** True when it was forwarded from elsewhere. */
   isForwarded: boolean;
+  /** ISO-8601 UTC when the sender edited the text, else null. Drives the "edited" label. */
+  editedAt: string | null;
   /** ISO-8601 UTC when pinned in this conversation, else null. */
   pinnedAt: string | null;
   /**

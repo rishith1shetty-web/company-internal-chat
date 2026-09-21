@@ -26,6 +26,8 @@ import { cn } from '@/lib/ui/cn';
  */
 export interface MessageActions {
   onReply(message: ChatMessage): void;
+  /** Loads the message's text back into the composer for the sender to rewrite (Batch 1.1). */
+  onEdit(message: ChatMessage): void;
   onReact(message: ChatMessage, emoji: string): void;
   onForward(message: ChatMessage): void;
   onTogglePin(message: ChatMessage): void;
@@ -208,6 +210,7 @@ export function MessageList({
             isOwn: menu.message.senderId === currentUserId,
             onReply: () => actions.onReply(menu.message),
             onCopy: () => void copyMessage(menu.message),
+            onEdit: () => actions.onEdit(menu.message),
             onForward: () => actions.onForward(menu.message),
             onTogglePin: () => actions.onTogglePin(menu.message),
             onDelete: () => actions.onRequestDelete(menu.message),
@@ -259,6 +262,7 @@ function buildMenuActions(
     isOwn: boolean;
     onReply(): void;
     onCopy(): void;
+    onEdit(): void;
     onForward(): void;
     onTogglePin(): void;
     onDelete(): void;
@@ -268,6 +272,8 @@ function buildMenuActions(
   const system = message.kind === 'SYSTEM';
   const settled = message.deliveryState === 'SENT';
   const hasText = Boolean(message.body?.trim() || message.attachment?.filename);
+  /** Text of its own, as opposed to a filename that can be copied but not rewritten. */
+  const hasBody = Boolean(message.body?.trim());
 
   return [
     {
@@ -277,6 +283,20 @@ function buildMenuActions(
       onSelect: handlers.onReply,
     },
     { key: 'copy', label: 'Copy', available: !deleted && hasText, onSelect: handlers.onCopy },
+    /*
+     * Edit: yours, still there, and with text in it to change.
+     *
+     * `hasBody` rather than `hasText`, and the difference matters: a file sent with no caption has
+     * a filename to copy but nothing to edit. Adding a caption afterwards is a feature this is
+     * deliberately not, and the server refuses it identically — the row being hidden here is a
+     * courtesy, never the control.
+     */
+    {
+      key: 'edit',
+      label: 'Edit',
+      available: handlers.isOwn && settled && !deleted && !system && hasBody,
+      onSelect: handlers.onEdit,
+    },
     {
       key: 'forward',
       label: 'Forward',
@@ -563,6 +583,19 @@ function MessageBubble({
           >
             {formatTime(message.createdAt)}
           </time>
+          {/*
+            "edited", beside the time rather than inside the bubble.
+            
+            Shown to everybody — sender and recipients, direct chats and groups — because a message
+            that has changed since it was read is exactly the kind of thing a reader is entitled to
+            know. It carries no timestamp of its own: when it was edited is rarely the question,
+            and a second time next to the first reads as clutter.
+          */}
+          {message.editedAt !== null && !deleted ? (
+            <span className="ml-1.5" title={`Edited ${formatFullTimestamp(message.editedAt)}`}>
+              · edited
+            </span>
+          ) : null}
           {sending ? <span className="ml-1.5">Sending…</span> : null}
           {message.pinnedAt !== null && !deleted ? (
             <span className="ml-1.5 inline-flex items-center gap-0.5" title="Pinned">

@@ -60,6 +60,7 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
     body: 'hello',
     replyTo: null,
     isForwarded: false,
+    editedAt: null,
     pinnedAt: null,
     deletedAt: null,
     reactions: [],

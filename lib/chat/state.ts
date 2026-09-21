@@ -418,6 +418,7 @@ export function toChatMessage(wire: MessageWire, deliveryState: DeliveryState = 
     attachment: wire.attachment,
     replyTo: wire.replyTo,
     isForwarded: wire.isForwarded,
+    editedAt: wire.editedAt,
     pinnedAt: wire.pinnedAt,
     deletedAt: wire.deletedAt,
     reactions: wire.reactions,
@@ -581,6 +582,8 @@ function queueMessage(
      */
     replyTo: action.replyTo ?? null,
     isForwarded: false,
+    // Nothing has been sent yet, so nothing has been edited.
+    editedAt: null,
     pinnedAt: null,
     deletedAt: null,
     reactions: [],

@@ -30,6 +30,7 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
     createdAt: '2026-09-02T10:15:00.000Z',
     attachment: null,
     replyTo: null,
+    editedAt: null,
     isForwarded: false,
     pinnedAt: null,
     deletedAt: null,
