@@ -1,9 +1,21 @@
 'use client';
 
+import { useCallback, useMemo, useState } from 'react';
+
+import { ConversationSection } from '@/components/chat/ConversationSection';
 import { Avatar, GroupAvatar, PresenceDot, UnreadBadge } from '@/components/ui/Avatar';
 import { ChatIcon, GroupIcon } from '@/components/ui/icons';
 import { formatListTimestamp } from '@/lib/chat/format';
 import type { ConversationListEntry } from '@/lib/chat/state';
+import {
+  isSectionVisible,
+  loadSectionPreferences,
+  resolveSectionOpen,
+  saveSectionPreferences,
+  splitConversationSections,
+  type SectionPreferences,
+  type SidebarSectionKey,
+} from '@/lib/chat/sidebar-sections';
 import { cn } from '@/lib/ui/cn';
 
 interface ConversationListProps {
@@ -14,13 +26,49 @@ interface ConversationListProps {
   searchTerm: string;
 }
 
-/** One-to-one and group conversations, most recent activity first. */
+/**
+ * The conversation sidebar: GROUPS above CHATS, each independently collapsible (Batch 1.4).
+ *
+ * The rules live in lib/chat/sidebar-sections.ts and are pure; this component holds the one piece
+ * of genuinely local state — what the employee last chose — and renders what those rules decide.
+ *
+ * NOTHING ABOUT A CONVERSATION ROW CHANGED. The same `ConversationListItem` renders the same
+ * avatar, presence dot, preview, "You:" prefix, timestamp, unread badge and selected state it did
+ * before; the only difference is which of two lists it is in.
+ */
 export function ConversationList({
   entries,
   selectedConversationId,
   onSelect,
   searchTerm,
 }: ConversationListProps) {
+  /*
+   * Read once, during the first render, rather than assigned from an effect afterwards — the
+   * same shape as `useNotifications` and for the same reason.
+   *
+   * HYDRATION-SAFE despite `localStorage` being absent on the server, because this subtree is
+   * never in the server markup: `initialChatState.screen` is `'loading'`, so a server render
+   * produces the splash and the workspace only exists after the client has resolved identity.
+   * There is therefore no server-rendered "expanded" for a stored "collapsed" to disagree with.
+   *
+   * Setting it from an effect instead would cost an extra render on every mount to arrive at the
+   * same place, and is what `react-hooks/set-state-in-effect` exists to prevent.
+   */
+  const [preferences, setPreferences] = useState<SectionPreferences>(() =>
+    loadSectionPreferences(),
+  );
+
+  const toggleSection = useCallback((key: SidebarSectionKey) => {
+    setPreferences((current) => {
+      const next = { ...current, [key]: !current[key] };
+      saveSectionPreferences(next);
+      return next;
+    });
+  }, []);
+
+  const searching = searchTerm.trim().length > 0;
+  const sections = useMemo(() => splitConversationSections(entries), [entries]);
+
   if (entries.length === 0) {
     return (
       <div className="px-3 py-8 text-center">
@@ -31,11 +79,11 @@ export function ConversationList({
           <ChatIcon className="h-5 w-5" />
         </span>
         <p className="mt-3 text-sm text-ink-muted">
-          {searchTerm.trim().length > 0
+          {searching
             ? `No conversations match “${searchTerm.trim()}”.`
             : 'No conversations yet.'}
         </p>
-        {searchTerm.trim().length === 0 ? (
+        {!searching ? (
           <p className="mt-1 text-xs text-ink-subtle">
             Use New chat or New group above to start one.
           </p>
@@ -45,17 +93,61 @@ export function ConversationList({
   }
 
   return (
-    <ul className="space-y-0.5" aria-label="Conversations">
-      {entries.map((entry) => (
-        <li key={entry.id}>
-          <ConversationListItem
-            entry={entry}
-            selected={entry.id === selectedConversationId}
-            onSelect={() => onSelect(entry.id)}
-          />
-        </li>
-      ))}
-    </ul>
+    <div aria-label="Conversations">
+      {sections.map((section) => {
+        if (!isSectionVisible(section, searching)) return null;
+
+        const containsSelected =
+          selectedConversationId !== null &&
+          section.entries.some((entry) => entry.id === selectedConversationId);
+
+        const preference = preferences[section.key];
+        const open = resolveSectionOpen({
+          preference,
+          searching,
+          hasMatches: section.entries.length > 0,
+          containsSelected,
+        });
+
+        /*
+         * Why a section the employee collapsed is nonetheless open. Only reported when it
+         * actually differs from what they chose, so an ordinary expanded section says nothing.
+         */
+        const overriddenReason = preference
+          ? null
+          : searching && section.entries.length > 0
+            ? 'search'
+            : containsSelected
+              ? 'selection'
+              : null;
+
+        return (
+          <ConversationSection
+            key={section.key}
+            section={section}
+            open={open}
+            overriddenReason={overriddenReason}
+            onToggle={() => toggleSection(section.key)}
+          >
+            {section.entries.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-ink-subtle">{section.emptyLabel}</p>
+            ) : (
+              <ul className="space-y-0.5">
+                {section.entries.map((entry) => (
+                  <li key={entry.id}>
+                    <ConversationListItem
+                      entry={entry}
+                      selected={entry.id === selectedConversationId}
+                      onSelect={() => onSelect(entry.id)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </ConversationSection>
+        );
+      })}
+    </div>
   );
 }
 

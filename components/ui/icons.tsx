@@ -34,6 +34,21 @@ export function ChatIcon(props: IconProps) {
   );
 }
 
+/**
+ * A disclosure chevron, drawn POINTING RIGHT.
+ *
+ * The expanded state is produced by rotating this 90 degrees at the call site rather than by a
+ * second glyph, so the two states are the same shape in two positions — which is what makes the
+ * transition between them read as one control opening rather than two icons swapping.
+ */
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m9.5 6 6 6-6 6" />
+    </Svg>
+  );
+}
+
 export function SearchIcon(props: IconProps) {
   return (
     <Svg {...props}>
