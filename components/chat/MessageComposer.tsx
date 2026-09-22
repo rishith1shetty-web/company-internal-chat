@@ -16,6 +16,7 @@ import {
   SendIcon,
 } from '@/components/ui/icons';
 import { canReadClipboard, pasteIntoComposer } from '@/lib/chat/clipboard';
+import { COMPOSER_SPELLCHECK, shouldUseCustomComposerMenu } from '@/lib/chat/composer-menu';
 import { formatFileSize } from '@/lib/chat/format';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
@@ -222,8 +223,22 @@ export function MessageComposer({
     [],
   );
 
-  /** Right-click inside the field: our menu instead of nothing (Electron) or the native one. */
+  /**
+   * Right-click inside the field: our menu, but only where the platform offers none.
+   *
+   * WHY THE EARLY RETURN (Batch 1.5). This handler used to call `preventDefault` unconditionally,
+   * which is right in the desktop client — Electron shows no context menu of its own, so without
+   * ours there is nothing — and wrong in a browser, where it also cancelled Chrome's and Safari's
+   * own menu and took the SPELLING SUGGESTIONS down with it. Standing aside in a browser gives
+   * the employee suggestions from the OS dictionary plus a native Paste, neither of which this
+   * application could offer as well itself.
+   *
+   * Returning BEFORE `preventDefault` is the whole of the fix: the event continues untouched and
+   * the platform does what it would have done. See lib/chat/composer-menu.ts for the rule.
+   */
   const openComposerMenu = useCallback((event: ReactMouseEvent<HTMLTextAreaElement>) => {
+    if (!shouldUseCustomComposerMenu()) return;
+
     const field = event.currentTarget;
     event.preventDefault();
     setComposerMenu({
@@ -486,6 +501,19 @@ export function MessageComposer({
             onChange={(event) => setBody(event.target.value)}
             onKeyDown={onKeyDown}
             onContextMenu={openComposerMenu}
+            /*
+             * Spelling underlines, from the platform's own dictionary (Batch 1.5).
+             *
+             * Stated explicitly rather than left to the default: a textarea is spellchecked by
+             * default in Chrome and Safari, but `spellcheck` INHERITS, so any ancestor that ever
+             * turned it off would silently take it away here. This pins the one field where it
+             * matters.
+             *
+             * No `lang` and no `autoCorrect`: the dictionary is inherited from `<html lang="en">`
+             * so the employee's own English variant still applies, and nothing may rewrite a word
+             * that a person did not choose to change. See lib/chat/composer-menu.ts.
+             */
+            spellCheck={COMPOSER_SPELLCHECK}
             placeholder={
               editing
                 ? 'Edit your message'

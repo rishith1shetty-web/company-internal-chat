@@ -27,6 +27,11 @@ interface ComposerContextMenuProps {
  * default context menu for web content — so inside the desktop client, which is what employees
  * use, a right-click in the composer does nothing whatsoever. This is that missing menu.
  *
+ * SO IT IS NOW RENDERED ONLY IN THE DESKTOP CLIENT (Batch 1.5). That was always the case it was
+ * written for; until Batch 1.5 it was also shown in browsers, where it replaced a native menu
+ * that was strictly better — one that carries spelling suggestions as well as Paste. The composer
+ * decides, via `shouldUseCustomComposerMenu`; nothing in this file changed.
+ *
  * Deliberately one item. Cut and Copy inside a textarea are already served by the keyboard and by
  * the browser's own menu where there is one, and a menu that lists three things to make itself
  * look complete is a menu with two rows nobody presses. Paste is the one that is genuinely
