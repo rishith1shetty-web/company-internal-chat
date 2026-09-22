@@ -48,19 +48,70 @@ const globalForPrisma = globalThis as unknown as {
   __companyChatPrisma?: PrismaClient;
 };
 
+/**
+ * libpq connection options applied to EVERY connection this project opens.
+ *
+ * `timezone=UTC` is not a preference. It is what makes a stored timestamp mean what it says.
+ *
+ * THE BUG THIS FIXES, precisely. Prisma hands a `DateTime` to the driver as the instant's UTC
+ * wall clock in a NAIVE, offset-less form — `2026-09-22 16:00:00` for `2026-09-22T16:00:00Z`.
+ * PostgreSQL has to attach an offset to a naive literal, and the one it attaches is the SESSION
+ * timezone's. This machine's cluster was initialised from the operating system, so its session
+ * timezone is `America/New_York`, and the row therefore stored `2026-09-22 16:00:00-04` — the
+ * instant `20:00Z`, four hours after the one that was written.
+ *
+ * It went unnoticed for so long because the READ path is exactly symmetric: PostgreSQL renders
+ * the row back in the same session zone, Prisma keeps the naive part and calls it UTC, and the
+ * original instant comes back intact. Every comparison the application makes is between two
+ * values that carry the identical error, so ordering, unread counts, read watermarks and
+ * session expiry all behaved correctly while the stored data was wrong.
+ *
+ * Three things it was NOT safe to leave alone:
+ *
+ *   1. The skew is the session's offset, so it is +5h in winter and +4h in summer — a stored
+ *      value cannot be corrected by subtracting any single interval.
+ *   2. A naive literal landing in the spring-forward gap (a local time that does not exist)
+ *      cannot round-trip, so messages sent during that hour come back an hour out and can sort
+ *      into the wrong order.
+ *   3. Restoring a backup onto a cluster whose timezone setting differs — a different server, a
+ *      cloud instance, a colleague's machine — re-reads every historical row through the wrong
+ *      offset. The database was only readable on a machine configured exactly like this one.
+ *
+ * With the session pinned to UTC the naive literal is interpreted as what it actually is, the
+ * stored instant is correct, and the read path stays symmetric. Nothing in the application's own
+ * comparisons changes.
+ *
+ * It is set here rather than in `production.env` deliberately: it is a correctness invariant of
+ * the data layer, not a deployment choice, and a connection opened by a script or a test must
+ * carry it too. `lib/time/company-time.ts` handles the other half — showing those correct
+ * instants to employees in company time.
+ */
+export const DATABASE_SESSION_OPTIONS = '-c timezone=UTC';
+
+/**
+ * The driver adapter, configured identically everywhere.
+ *
+ * A factory rather than a documented convention, because the convention was the problem: seven
+ * places in this project construct a client, and one that quietly omitted the session options
+ * would write skewed rows into the same database the others were writing correct ones into.
+ * There is nowhere to forget it now.
+ */
+export function createDatabaseAdapter(applicationName?: string): PrismaPg {
+  return new PrismaPg({
+    connectionString: process.env['DATABASE_URL'],
+    options: DATABASE_SESSION_OPTIONS,
+    // Named so this project's connections are identifiable in pg_stat_activity when
+    // diagnosing a problem on the company server.
+    ...(applicationName === undefined ? {} : { application_name: applicationName }),
+  });
+}
+
 function createClient(): PrismaClient {
   // Throws unless DATABASE_URL is present, well-formed, and targets company_chat_db.
   const target = parseDatabaseUrl(process.env['DATABASE_URL']);
 
-  const adapter = new PrismaPg({
-    connectionString: process.env['DATABASE_URL'],
-    // Named so this project's connections are identifiable in pg_stat_activity when
-    // diagnosing a problem on the company server.
-    application_name: `company-internal-chat (${target.database})`,
-  });
-
   return new PrismaClient({
-    adapter,
+    adapter: createDatabaseAdapter(`company-internal-chat (${target.database})`),
     // Errors and warnings only. Query logging would put message bodies in the log, which
     // CLAUDE.md §14 forbids.
     log: ['warn', 'error'],

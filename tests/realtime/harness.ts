@@ -18,12 +18,12 @@ import {
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { PrismaPg } from '@prisma/adapter-pg';
 import { io as connect, type Socket as ClientSocket } from 'socket.io-client';
 
 import { SESSION_COOKIE, DEVICE_COOKIE } from '@/lib/auth/session';
 import { assignDevice, enrollDevice, type EnrollmentConfig } from '@/lib/devices/service';
 import type { Logger } from '@/lib/logging/logger';
+import { createDatabaseAdapter } from '@/lib/db/prisma';
 import { parseDatabaseUrl } from '@/lib/db/target';
 import type { NetworkGate } from '@/lib/net/gate';
 import { createRealtimeGateway, type RealtimeGateway } from '@/lib/realtime/gateway';
@@ -57,7 +57,7 @@ export function testDb(): PrismaClient {
     // The single-database guard applies to tests exactly as it does to the application.
     parseDatabaseUrl(process.env['DATABASE_URL']);
     db = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL'] }),
+      adapter: createDatabaseAdapter('tests/realtime'),
     });
   }
   return db;

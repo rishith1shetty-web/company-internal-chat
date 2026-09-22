@@ -14,9 +14,8 @@
  *     npm run db:check
  */
 
-import { PrismaPg } from '@prisma/adapter-pg';
-
 import { PrismaClient } from '../prisma/generated/client';
+import { createDatabaseAdapter } from '../lib/db/prisma';
 import { DatabaseTargetError, parseDatabaseUrl } from '../lib/db/target';
 
 /** Tables this project owns, in dependency order. Nothing outside this list is inspected. */
@@ -66,7 +65,7 @@ async function main(): Promise<void> {
   process.stdout.write(`  role      ${target.user}\n`);
   process.stdout.write('  ✔ target is company_chat_db — no other database is contacted\n\n');
 
-  const adapter = new PrismaPg({ connectionString: process.env['DATABASE_URL'] });
+  const adapter = createDatabaseAdapter('db-check');
   const prisma = new PrismaClient({ adapter });
 
   try {

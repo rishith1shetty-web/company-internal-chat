@@ -17,9 +17,8 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { PrismaPg } from '@prisma/adapter-pg';
-
 import { PrismaClient } from '@/prisma/generated/client';
+import { createDatabaseAdapter } from '@/lib/db/prisma';
 import { parseDatabaseUrl } from '@/lib/db/target';
 
 /** Prefix for every display name created by the tests. */
@@ -43,7 +42,7 @@ export function db(): PrismaClient {
     parseDatabaseUrl(process.env['DATABASE_URL']);
 
     client = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL'] }),
+      adapter: createDatabaseAdapter('tests/db'),
     });
   }
   return client;

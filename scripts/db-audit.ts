@@ -9,9 +9,8 @@
  *   npx tsx scripts/db-audit.ts
  */
 
-import { PrismaPg } from '@prisma/adapter-pg';
-
 import { loadEnvironmentFile } from '../lib/config/env-file';
+import { createDatabaseAdapter } from '../lib/db/prisma';
 import { parseDatabaseUrl } from '../lib/db/target';
 import { PrismaClient } from '../prisma/generated/client';
 import { TEST_PREFIXES } from './test-prefixes';
@@ -24,7 +23,7 @@ async function main(): Promise<void> {
   const target = parseDatabaseUrl(process.env['DATABASE_URL']);
 
   const db = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL'] }),
+    adapter: createDatabaseAdapter('db-audit'),
   });
 
   try {

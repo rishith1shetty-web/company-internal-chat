@@ -25,10 +25,9 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { PrismaPg } from '@prisma/adapter-pg';
-
 import { loadConfig } from '../lib/config/env';
 import { loadEnvironmentFile } from '../lib/config/env-file';
+import { createDatabaseAdapter } from '../lib/db/prisma';
 import { parseDatabaseUrl } from '../lib/db/target';
 import { resolveStoragePath } from '../lib/files/storage';
 import { PrismaClient } from '../prisma/generated/client';
@@ -54,7 +53,7 @@ async function main(): Promise<void> {
   const uploadDir = resolve(readArgument('upload-dir') ?? config.uploadDir);
 
   const db = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL'] }),
+    adapter: createDatabaseAdapter('verify-attachments'),
   });
 
   let missing = 0;

@@ -24,9 +24,8 @@
  * storage sweep already handles.
  */
 
-import { PrismaPg } from '@prisma/adapter-pg';
-
 import { loadConfig } from '../lib/config/env';
+import { createDatabaseAdapter } from '../lib/db/prisma';
 import { parseDatabaseUrl } from '../lib/db/target';
 import { deleteStoredFile } from '../lib/files/storage';
 import { PrismaClient } from '../prisma/generated/client';
@@ -64,7 +63,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
 
   const db = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL'] }),
+    adapter: createDatabaseAdapter('db-cleanup-e2e'),
   });
 
   const out = (text: string) => process.stdout.write(`${text}\n`);

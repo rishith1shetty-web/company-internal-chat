@@ -1,11 +1,19 @@
 /**
  * Presentation helpers for the chat UI. Pure functions, no React, no data access.
  *
- * Timestamps are stored UTC and rendered in the browser's local timezone (assumption A-05).
+ * Timestamps arrive as ISO-8601 UTC strings and are rendered in COMPANY time — America/New_York,
+ * whatever the reader's machine is set to. That replaces assumption A-05 ("the browser's local
+ * timezone"), which was fine while everyone was in the office and wrong as soon as anyone was
+ * not: two people discussing "the 3 o'clock message" have to be looking at the same number.
+ * See lib/time/company-time.ts for why the zone is named rather than offset.
+ *
  * Because the same component tree renders on the server during SSR and again in the browser,
- * any locale/timezone-dependent output must be marked with `suppressHydrationWarning` at the
- * element that prints it — see components/chat/MessageBubble.tsx.
+ * any locale-dependent output must still be marked with `suppressHydrationWarning` at the
+ * element that prints it — see components/chat/MessageBubble.tsx. Fixing the timezone removes
+ * one source of that mismatch, not the locale itself.
  */
+
+import { companyDayNumber, formatInCompanyTime } from '@/lib/time/company-time';
 
 import type { Conversation, UserSummary } from './types';
 
@@ -63,9 +71,9 @@ export function hasNameCollision(users: readonly UserSummary[], user: UserSummar
   );
 }
 
-/** Time of day, e.g. "09:24". */
+/** Time of day in company time, e.g. "09:24". */
 export function formatTime(isoTimestamp: string): string {
-  return new Date(isoTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatInCompanyTime(new Date(isoTimestamp), { hour: '2-digit', minute: '2-digit' });
 }
 
 /** Day label used for message separators: "Today", "Yesterday", or a full date. */
@@ -74,7 +82,7 @@ export function formatDayLabel(isoTimestamp: string, now: Date = new Date()): st
   const dayDifference = daysBetween(value, now);
   if (dayDifference === 0) return 'Today';
   if (dayDifference === 1) return 'Yesterday';
-  return value.toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
+  return formatInCompanyTime(value, { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 /** Compact stamp for the conversation list: time today, weekday this week, else a date. */
@@ -83,13 +91,13 @@ export function formatListTimestamp(isoTimestamp: string, now: Date = new Date()
   const dayDifference = daysBetween(value, now);
   if (dayDifference === 0) return formatTime(isoTimestamp);
   if (dayDifference === 1) return 'Yesterday';
-  if (dayDifference < 7) return value.toLocaleDateString([], { weekday: 'short' });
-  return value.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
+  if (dayDifference < 7) return formatInCompanyTime(value, { weekday: 'short' });
+  return formatInCompanyTime(value, { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
-/** Full local timestamp, used in tooltips and the details panel. */
+/** Full company-time timestamp, used in tooltips, the details panel and the admin console. */
 export function formatFullTimestamp(isoTimestamp: string): string {
-  return new Date(isoTimestamp).toLocaleString([], {
+  return formatInCompanyTime(new Date(isoTimestamp), {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
@@ -118,11 +126,15 @@ export function formatByteSize(bytes: number): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
-/** Whole days between two instants, using local calendar days. */
+/**
+ * Whole days between two instants, counted on the COMPANY's calendar.
+ *
+ * "Today" has to mean today in New York. Counted on the reader's own calendar instead, a message
+ * sent at 21:00 Eastern is already "Yesterday" to a colleague in India whose date has rolled
+ * over — sitting directly above a timestamp that still says 21:00.
+ */
 function daysBetween(value: Date, now: Date): number {
-  const startOfValue = new Date(value.getFullYear(), value.getMonth(), value.getDate());
-  const startOfNow = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((startOfNow.getTime() - startOfValue.getTime()) / 86_400_000);
+  return companyDayNumber(now) - companyDayNumber(value);
 }
 
 /** Member count phrase for a group header. */
