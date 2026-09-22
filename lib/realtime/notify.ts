@@ -68,6 +68,21 @@ export interface MessageUpdate {
   message: StoredMessage;
 }
 
+/**
+ * One person's read marker moved (Batch 1.3).
+ *
+ * `lastReadAt` is the watermark for a DIRECT conversation and null for a group — the caller
+ * decides which, from the conversation's type, so this module carries no policy of its own.
+ */
+export interface ConversationRead {
+  conversationId: string;
+  /** Who read. Their own sockets are deliberately NOT told; they already know. */
+  userId: string;
+  lastReadAt: Date | null;
+  /** The other active members, read from the database by the caller. Never from a request. */
+  audienceIds: readonly string[];
+}
+
 /** One person hid one message for themselves. Only their own sockets are told. */
 export interface MessageHidden {
   userId: string;
@@ -80,6 +95,7 @@ export interface RealtimeNotifier {
   messagePosted(posted: PostedMessage): void;
   messageUpdated(update: MessageUpdate): void;
   messageHidden(hidden: MessageHidden): void;
+  conversationRead(read: ConversationRead): void;
 }
 
 const globalForRealtime = globalThis as unknown as {
@@ -139,4 +155,15 @@ export function notifyMessageUpdated(update: MessageUpdate): void {
 /** Tells one person's other sockets that they hid a message. Nobody else is told. */
 export function notifyMessageHidden(hidden: MessageHidden): void {
   globalForRealtime.__companyChatNotifier?.messageHidden(hidden);
+}
+
+/**
+ * Tells the other members of a conversation that somebody's read marker moved.
+ *
+ * Same contract as the rest of this module: called only after the marker is committed, and a
+ * no-op when no gateway is attached. A browser that misses it converges on its next read of the
+ * conversation list, and every reconnection performs one.
+ */
+export function notifyConversationRead(read: ConversationRead): void {
+  globalForRealtime.__companyChatNotifier?.conversationRead(read);
 }

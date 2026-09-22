@@ -719,6 +719,28 @@ export function createRealtimeGateway(
         messageId: hidden.messageId,
       });
     },
+
+    /**
+     * Somebody's read marker moved (Batch 1.3).
+     *
+     * Emitted per user rather than into the conversation room, and the reader is excluded — they
+     * moved their own marker and their other tabs already learn it from the HTTP response.
+     *
+     * The audience is the caller's, read from the database: membership decides who hears that
+     * somebody read, exactly as it decides everything else here.
+     */
+    conversationRead(read): void {
+      const payload = {
+        conversationId: read.conversationId,
+        userId: read.userId,
+        lastReadAt: read.lastReadAt?.toISOString() ?? null,
+      };
+
+      for (const userId of read.audienceIds) {
+        if (userId === read.userId) continue;
+        io.to(rooms.user(userId)).emit('conversation:read', payload);
+      }
+    },
   };
 
   setRealtimeNotifier(notifier);

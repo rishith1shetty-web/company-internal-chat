@@ -221,6 +221,21 @@ export interface ConversationMemberWire {
   userId: string;
   role: 'OWNER' | 'MEMBER';
   joinedAt: string;
+  /**
+   * This member's read watermark, as an ISO-8601 message timestamp — DIRECT conversations only,
+   * and null everywhere else (Batch 1.3).
+   *
+   * It is the `createdAt` of the furthest message they have read, NOT the moment they read it.
+   * That is enough for the "Seen" indicator, which only ever asks whether the marker has reached
+   * a given message.
+   *
+   * WHY GROUPS GET NULL. Handing every member's watermark to every member would let anybody in a
+   * group compute per-member read status for anybody's messages — which is precisely the
+   * capability this feature restricts to the sender, through `GET /api/messages/:id/info`. A
+   * direct conversation has exactly one other person, and telling you whether they have read your
+   * message IS the feature, so there is nothing withheld there.
+   */
+  lastReadAt: string | null;
 }
 
 export interface MessagePreviewWire {
@@ -331,6 +346,44 @@ export interface ForwardResultWire {
    * than failing the whole operation because one group was left.
    */
   failures: { conversationId: string; reason: 'FORBIDDEN' | 'UNAVAILABLE' | 'FAILED' }[];
+}
+
+/**
+ * `GET /api/messages/:id/info` — who has read a message you sent in a group (Batch 1.3).
+ *
+ * Names are NOT inlined: ids plus a `users` array, exactly as the conversation endpoints do, so
+ * there is one way for the interface to resolve a person and no second place for a display name
+ * to come from.
+ *
+ * THERE ARE NO READ TIMES, deliberately. The read marker records the timestamp of the furthest
+ * MESSAGE a member has read, not the moment they read it, so any "read at" here would be a
+ * specific and plausible wrong time. Reporting nothing is the honest answer; see
+ * lib/messages/read-status.ts.
+ */
+export interface MessageReadStatusWire {
+  messageId: string;
+  readBy: { userId: string; stillMember: boolean }[];
+  notReadBy: { userId: string; stillMember: boolean }[];
+  /** Everybody named above, including anyone who has since left the group. */
+  users: UserWire[];
+}
+
+/**
+ * `conversation:read` — a member moved their read marker (Batch 1.3).
+ *
+ * Carries `lastReadAt` for a DIRECT conversation and null for a group, for the reason given on
+ * `ConversationMemberWire.lastReadAt`. In a group it is a bare nudge: "somebody read something
+ * here", which tells an open Message info panel to re-read through the authorized endpoint and
+ * tells anybody else nothing they could use.
+ *
+ * NEVER A NOTIFICATION. No sound, no toast, no unread change, no reordering — it is not a message
+ * and the client does not treat it as one.
+ */
+export interface ConversationReadWire {
+  conversationId: string;
+  /** Who read. Never the recipient of this event. */
+  userId: string;
+  lastReadAt: string | null;
 }
 
 /** `GET /api/conversations/:id/pins` — pinned messages, newest pin first. */

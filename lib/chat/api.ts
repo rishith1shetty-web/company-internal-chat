@@ -28,6 +28,7 @@ import type {
   SessionIdentityWire,
   ForwardResultWire,
   MessageMutationWire,
+  MessageReadStatusWire,
   PinnedMessagesWire,
 } from '@/lib/chat/wire';
 
@@ -390,6 +391,19 @@ export function editMessage(messageId: string, body: string): Promise<MessageMut
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ body }),
   });
+}
+
+/**
+ * Who has read a message this user sent in a group (Batch 1.3).
+ *
+ * The server refuses this for anybody but the sender, and derives the conversation from the
+ * message rather than taking one from here — so there is no conversation id in this call and
+ * nothing to point at the wrong one.
+ */
+export function fetchMessageReadStatus(messageId: string): Promise<MessageReadStatusWire> {
+  return request<MessageReadStatusWire>(
+    `/api/messages/${encodeURIComponent(messageId)}/info`,
+  );
 }
 
 /** The pinned messages of a conversation, newest pin first. */

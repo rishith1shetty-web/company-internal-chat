@@ -27,6 +27,7 @@ export { SOCKET_PATH } from '../chat/wire';
 export type {
   Ack,
   ConversationChangedWire,
+  ConversationReadWire,
   JoinedConversationWire,
   MessageWire,
   PresenceWire,
@@ -40,6 +41,7 @@ export type {
 import type {
   Ack,
   ConversationChangedWire,
+  ConversationReadWire,
   JoinedConversationWire,
   MessageWire,
   PresenceWire,
@@ -158,6 +160,24 @@ export interface ServerToClientEvents {
    * unread increment (`lib/notifications/policy.ts` is not consulted for it).
    */
   'message:updated': (payload: MessageWire) => void;
+
+  /**
+   * Somebody moved their read marker in a conversation this user is in (Batch 1.3).
+   *
+   * ONE EVENT PER MARKER MOVE, not one per message. Opening a conversation with two hundred
+   * unread messages advances a single watermark and emits a single event — the watermark model is
+   * what makes that possible, and it is why read receipts here cost almost nothing on the wire.
+   * It is emitted only when the marker ACTUALLY moved; re-opening a conversation already read to
+   * the end says nothing and sends nothing.
+   *
+   * `lastReadAt` is carried for a DIRECT conversation and is null for a group, so a group's
+   * per-member read state stays behind the sender-only `GET /api/messages/:id/info`. In a group
+   * this is a bare nudge that an open Message info panel can answer by re-reading.
+   *
+   * NEVER A NOTIFICATION. No sound, no toast, no unread change, no reordering: reading is not
+   * sending, and the client routes this to the reducer rather than to the notification policy.
+   */
+  'conversation:read': (payload: ConversationReadWire) => void;
 
   /**
    * A message this user hid for themselves ("delete for me").

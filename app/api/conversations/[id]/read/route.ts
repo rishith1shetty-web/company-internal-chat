@@ -15,9 +15,14 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import type { ReadReceiptWire } from '@/lib/chat/wire';
-import { ConversationError, markConversationRead } from '@/lib/conversations/service';
+import {
+  ConversationError,
+  markConversationRead,
+  readAnnouncementFor,
+} from '@/lib/conversations/service';
 import { getDb } from '@/lib/db/prisma';
 import { forbidden, invalidRequest, readJsonBody, withIdentity } from '@/lib/http/route-helpers';
+import { notifyConversationRead } from '@/lib/realtime/notify';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,6 +51,27 @@ export async function POST(
         id,
         parsed.data.messageId,
       );
+
+      /*
+       * Tell the others, but only when the marker actually MOVED (Batch 1.3).
+       *
+       * One event per move, never one per message: a conversation opened with two hundred unread
+       * messages advances a single watermark. Re-opening one already read to the end changes
+       * nothing and announces nothing.
+       *
+       * The watermark itself travels only in a DIRECT conversation. In a group it is withheld, so
+       * per-member read state stays behind the sender-only `GET /api/messages/:id/info` — the
+       * event is then a bare nudge for an open Message info panel.
+       */
+      if (result.moved) {
+        const audience = await readAnnouncementFor(getDb(), result.conversationId);
+        notifyConversationRead({
+          conversationId: result.conversationId,
+          userId: current.userId,
+          lastReadAt: audience.type === 'DIRECT' ? result.lastReadAt : null,
+          audienceIds: audience.audienceIds,
+        });
+      }
 
       return NextResponse.json({
         conversationId: result.conversationId,

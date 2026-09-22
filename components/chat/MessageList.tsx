@@ -36,6 +36,8 @@ export interface MessageActions {
   onRequestDelete(message: ChatMessage): void;
   /** Scrolls to a quoted message, when it is loaded. */
   onJumpToMessage(messageId: string): void;
+  /** Opens the group read-status panel for one of the reader's own messages (Batch 1.3). */
+  onShowInfo(message: ChatMessage): void;
 }
 
 interface MessageListProps {
@@ -47,6 +49,20 @@ interface MessageListProps {
   usersById: Map<string, UserSummary>;
   /** Group conversations name the sender above the bubble; direct ones do not need to. */
   showSenderNames: boolean;
+  /**
+   * Whether this is a group, which decides which read-receipt treatment applies (Batch 1.3).
+   *
+   * Separate from `showSenderNames` even though both are currently "is it a group": they answer
+   * different questions, and collapsing them would tie a read-receipt rule to a naming rule.
+   */
+  isGroup: boolean;
+  /**
+   * The one own message to mark "Seen", or null (direct conversations only).
+   *
+   * A single id rather than a flag per message: the read marker is a watermark, so everything
+   * above it is read too, and stamping every bubble would repeat the same fact down the screen.
+   */
+  seenMessageId: string | null;
   /** Scrolls to the newest message when this changes. */
   conversationId: string;
   /** A page of history is in flight. */
@@ -74,6 +90,8 @@ export function MessageList({
   highlightedMessageId,
   usersById,
   showSenderNames,
+  isGroup,
+  seenMessageId,
   conversationId,
   loading,
   loaded,
@@ -177,6 +195,7 @@ export function MessageList({
                 showSenderName={showSenderNames}
                 grouped={grouped}
                 highlighted={message.id === highlightedMessageId}
+                seen={message.id === seenMessageId}
                 onRetry={() => onRetry(message)}
                 onReact={(emoji) => actions.onReact(message, emoji)}
                 onJumpToReplyTarget={actions.onJumpToMessage}
@@ -219,9 +238,11 @@ export function MessageList({
           }
           actions={buildMenuActions(menu.message, {
             isOwn: menu.message.senderId === currentUserId,
+            isGroup,
             onReply: () => actions.onReply(menu.message),
             onCopy: () => void copyMessage(menu.message),
             onEdit: () => actions.onEdit(menu.message),
+            onShowInfo: () => actions.onShowInfo(menu.message),
             onForward: () => actions.onForward(menu.message),
             onTogglePin: () => actions.onTogglePin(menu.message),
             onDelete: () => actions.onRequestDelete(menu.message),
@@ -279,9 +300,11 @@ function buildMenuActions(
   message: ChatMessage,
   handlers: {
     isOwn: boolean;
+    isGroup: boolean;
     onReply(): void;
     onCopy(): void;
     onEdit(): void;
+    onShowInfo(): void;
     onForward(): void;
     onTogglePin(): void;
     onDelete(): void;
@@ -327,6 +350,19 @@ function buildMenuActions(
       label: message.pinnedAt === null ? 'Pin' : 'Unpin',
       available: settled && !deleted && !system,
       onSelect: handlers.onTogglePin,
+    },
+    /*
+     * Message info: a GROUP message, YOURS, and still a message (Batch 1.3).
+     *
+     * Direct conversations have no entry — the "Seen" mark under the bubble already says the only
+     * thing there is to say when there is one other person. The server re-derives every one of
+     * these conditions from the stored row, so hiding the row is a courtesy and never the control.
+     */
+    {
+      key: 'info',
+      label: 'Message info',
+      available: handlers.isGroup && handlers.isOwn && settled && !deleted && !system,
+      onSelect: handlers.onShowInfo,
     },
     {
       key: 'delete',
@@ -416,6 +452,8 @@ interface MessageBubbleProps {
   grouped: boolean;
   /** Briefly outlined after somebody jumped to it from a reply or the pinned banner. */
   highlighted: boolean;
+  /** True for the single message carrying the "Seen" mark in a direct conversation. */
+  seen: boolean;
   onRetry: () => void;
   onReact: (emoji: string) => void;
   onJumpToReplyTarget: (messageId: string) => void;
@@ -444,6 +482,7 @@ function MessageBubble({
   onReact,
   onJumpToReplyTarget,
   onOpenMenu,
+  seen,
 }: MessageBubbleProps) {
   const sending = message.deliveryState === 'SENDING';
   const failed = message.deliveryState === 'FAILED';
@@ -615,6 +654,14 @@ function MessageBubble({
               · edited
             </span>
           ) : null}
+          {/*
+            "Seen", under the newest own message the other participant has read.
+            
+            Direct conversations only, and only on messages this reader sent — `seen` is computed
+            from the OTHER participant's watermark, so opening your own conversation can never
+            make your own message look seen.
+          */}
+          {seen ? <span className="ml-1.5 font-medium text-brand">Seen</span> : null}
           {sending ? <span className="ml-1.5">Sending…</span> : null}
           {message.pinnedAt !== null && !deleted ? (
             <span className="ml-1.5 inline-flex items-center gap-0.5" title="Pinned">

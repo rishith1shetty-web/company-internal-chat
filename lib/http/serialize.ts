@@ -34,6 +34,8 @@ export function toConversationWire(conversation: ConversationSummary): Conversat
       userId: member.userId,
       role: member.role,
       joinedAt: member.joinedAt.toISOString(),
+      // Null in groups; the service decides that, not this mapping (Batch 1.3).
+      lastReadAt: member.lastReadAt?.toISOString() ?? null,
     })),
     lastMessage: conversation.lastMessage
       ? {

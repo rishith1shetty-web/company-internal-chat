@@ -41,8 +41,8 @@ function conversation(overrides: Partial<ConversationWire> = {}): ConversationWi
     createdAt: '2026-08-28T09:00:00.000Z',
     lastMessageAt: null,
     members: [
-      { userId: ALICE, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z' },
-      { userId: BOB, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z' },
+      { userId: ALICE, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z', lastReadAt: null },
+      { userId: BOB, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z', lastReadAt: null },
     ],
     lastMessage: null,
     unreadCount: 0,
@@ -301,8 +301,8 @@ describe('chat reducer', () => {
             id: other,
             lastMessageAt: '2026-08-28T09:30:00.000Z',
             members: [
-              { userId: ALICE, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z' },
-              { userId: BOB, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z' },
+              { userId: ALICE, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z', lastReadAt: null },
+              { userId: BOB, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z', lastReadAt: null },
             ],
           }),
         ],
@@ -350,8 +350,8 @@ describe('chat reducer', () => {
           conversation({
             id: '66666666-6666-4666-8666-666666666666',
             members: [
-              { userId: ALICE, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z' },
-              { userId: twin, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z' },
+              { userId: ALICE, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z', lastReadAt: null },
+              { userId: twin, role: 'MEMBER', joinedAt: '2026-08-28T09:00:00.000Z', lastReadAt: null },
             ],
           }),
         ],

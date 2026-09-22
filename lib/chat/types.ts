@@ -57,6 +57,14 @@ export interface ConversationMember {
   role: MemberRole;
   /** ISO-8601 UTC. Bounds the member's visible history for groups (D-03). */
   joinedAt: string;
+  /**
+   * This member's read watermark — DIRECT conversations only, null in groups (Batch 1.3).
+   *
+   * The `createdAt` of the furthest message they have read, not the moment they read it. It
+   * drives the "Seen" indicator and nothing else. The server withholds it for groups, where
+   * per-member read status belongs to the sender alone.
+   */
+  lastReadAt: string | null;
 }
 
 /**

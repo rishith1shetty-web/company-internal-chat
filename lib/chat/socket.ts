@@ -22,6 +22,7 @@ import { SOCKET_PATH } from '@/lib/chat/wire';
 import type {
   Ack,
   ConversationChangedWire,
+  ConversationReadWire,
   JoinedConversationWire,
   MessageWire,
   PresenceWire,
@@ -51,6 +52,14 @@ export interface ChatSocketHandlers {
   onMessageUpdated(payload: MessageWire): void;
   /** This user hid a message for themselves, in this window or another of theirs. */
   onMessageHidden(payload: { conversationId: string; messageId: string }): void;
+  /**
+   * Somebody moved their read marker in a conversation this user is in (Batch 1.3).
+   *
+   * Separate from `onMessage` for the same reason `onMessageUpdated` is: this must never reach
+   * the notification policy. Reading is not sending — no sound, no toast, no unread, no
+   * reordering.
+   */
+  onConversationRead(payload: ConversationReadWire): void;
   onPresence(payload: PresenceWire): void;
   /**
    * A conversation this user is — or has just stopped being — a member of has changed.
@@ -113,6 +122,7 @@ export function createChatSocket(handlers: ChatSocketHandlers): ChatSocketClient
   socket.on('message:new', handlers.onMessage);
   socket.on('message:updated', handlers.onMessageUpdated);
   socket.on('message:hidden', handlers.onMessageHidden);
+  socket.on('conversation:read', handlers.onConversationRead);
   socket.on('presence:update', handlers.onPresence);
   socket.on('conversation:changed', handlers.onConversationChanged);
   socket.on('server:error', handlers.onServerError);

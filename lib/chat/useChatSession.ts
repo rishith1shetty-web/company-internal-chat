@@ -46,6 +46,7 @@ import {
   forwardMessage as sendForward,
   setMessagePinned,
   setReaction as setMessageReaction,
+  fetchMessageReadStatus,
 } from '@/lib/chat/api';
 import {
   chatReducer,
@@ -55,7 +56,7 @@ import {
 import { newClientMessageId } from '@/lib/chat/ids';
 import { createChatSocket, type ChatSocketClient } from '@/lib/chat/socket';
 import type { ChatMessage } from '@/lib/chat/types';
-import type { MessageWire } from '@/lib/chat/wire';
+import type { MessageReadStatusWire, MessageWire } from '@/lib/chat/wire';
 import { conversationTitle, selectUsersById } from '@/lib/chat/state';
 import {
   describeIncomingMessage,
@@ -124,6 +125,24 @@ export interface ChatSession {
   deleteForEveryone(message: ChatMessage): void;
   /** Copies a message into other conversations. Returns how many destinations accepted. */
   forwardTo(message: ChatMessage, conversationIds: string[]): Promise<number>;
+  /* ------------------------------------------- read receipts (Batch 1.3) -------------------- */
+  /**
+   * Who has read one of this user's own group messages.
+   *
+   * Rejects for anybody else's message — the server decides that, and the hidden menu item is
+   * only a courtesy.
+   */
+  readStatusFor(messageId: string): Promise<MessageReadStatusWire>;
+  /**
+   * Subscribes to "somebody read something here" nudges, returning an unsubscribe function.
+   *
+   * Exists so an open Message info panel can refresh itself in real time without the group's
+   * per-member watermarks ever being broadcast — the nudge carries no read state at all, and the
+   * panel answers it by re-reading through the authorized endpoint.
+   */
+  subscribeToReadNudges(
+    handler: (conversationId: string, userId: string) => void,
+  ): () => void;
   searchDirectory(term: string): void;
   setSearchTerm(term: string): void;
   dismissNotice(): void;
@@ -401,6 +420,14 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
    * is persisted until the reply is actually sent, and a second tab replying to something else is
    * not a conflict to reconcile.
    */
+  /**
+   * An optional subscriber for read nudges, used by the group Message info panel (Batch 1.3).
+   *
+   * A ref rather than a dependency of the socket effect: the panel opens and closes constantly,
+   * and re-creating the socket each time it did would be a heavy price for a small feature.
+   */
+  const readNudgeRef = useRef<((conversationId: string, userId: string) => void) | null>(null);
+
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   /**
    * Which message is being edited, as an id — not as a snapshot of it.
@@ -517,6 +544,22 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       /** This user hid a message for themselves, here or in another of their windows. */
       onMessageHidden({ conversationId, messageId }) {
         dispatch({ type: 'message-hidden', conversationId, messageId });
+      },
+
+      /*
+       * Somebody read (Batch 1.3).
+       *
+       * Straight to the reducer, and deliberately NOT to `announce`: reading is not sending, so
+       * there is no sound, no toast, no unread change and no reordering. The reducer touches one
+       * member's watermark and nothing else.
+       *
+       * In a group `lastReadAt` is null — the server withholds it — and the reducer ignores it.
+       * The nudge is still useful: an open Message info panel re-reads through the authorized
+       * endpoint, which is the only place group read state is ever assembled.
+       */
+      onConversationRead({ conversationId, userId, lastReadAt }) {
+        dispatch({ type: 'conversation-read', conversationId, userId, lastReadAt });
+        readNudgeRef.current?.(conversationId, userId);
       },
 
       onMessage(wire) {
@@ -1178,6 +1221,29 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
    * `message:new`, including in this window, so inserting it here as well would be the one place
    * a message could appear twice.
    */
+  /** Who has read one of this user's own group messages. Authorized server-side. */
+  const readStatusFor = useCallback(
+    (messageId: string): Promise<MessageReadStatusWire> => fetchMessageReadStatus(messageId),
+    [],
+  );
+
+  /**
+   * Subscribes to read nudges.
+   *
+   * Single-subscriber by design: exactly one Message info panel is open at a time, and a list of
+   * handlers would be machinery for a case that cannot arise. The unsubscribe clears only its own
+   * registration, so a panel closing after another opened cannot silence the newer one.
+   */
+  const subscribeToReadNudges = useCallback(
+    (handler: (conversationId: string, userId: string) => void): (() => void) => {
+      readNudgeRef.current = handler;
+      return () => {
+        if (readNudgeRef.current === handler) readNudgeRef.current = null;
+      };
+    },
+    [],
+  );
+
   const forwardTo = useCallback(
     async (message: ChatMessage, conversationIds: string[]): Promise<number> => {
       if (conversationIds.length === 0) return 0;
@@ -1225,6 +1291,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     deleteForMe,
     deleteForEveryone,
     forwardTo,
+    readStatusFor,
+    subscribeToReadNudges,
     selectConversation,
     startDirectConversation,
     createGroup,

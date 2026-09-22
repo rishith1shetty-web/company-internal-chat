@@ -168,6 +168,19 @@ export type ChatAction =
   | { type: 'message-updated'; message: MessageWire }
   /** This user hid a message for themselves, here or in another of their windows. */
   | { type: 'message-hidden'; conversationId: string; messageId: string }
+  /**
+   * Somebody moved their read marker in a conversation this user is in (Batch 1.3).
+   *
+   * Updates one member's watermark and NOTHING else: no unread change, no reordering, no message
+   * touched. Reading is not sending, and this must never look like it was.
+   */
+  | {
+      type: 'conversation-read';
+      conversationId: string;
+      userId: string;
+      /** Null in groups, where the server withholds the watermark. */
+      lastReadAt: string | null;
+    }
   | { type: 'presence-changed'; entries: PresenceWire[] }
   | { type: 'connection-changed'; connection: ConnectionState }
   | { type: 'unread-cleared'; conversationId: string; unreadCount: number }
@@ -291,6 +304,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return updateMessage(state, action.message);
     case 'message-hidden':
       return hideMessage(state, action.conversationId, action.messageId);
+    case 'conversation-read':
+      return applyReadMarker(state, action.conversationId, action.userId, action.lastReadAt);
     case 'message-received':
       return receiveMessage(state, action.message);
 
@@ -436,6 +451,7 @@ export function toConversation(wire: ConversationWire): Conversation {
       userId: member.userId,
       role: member.role,
       joinedAt: member.joinedAt,
+      lastReadAt: member.lastReadAt,
     })),
     lastMessage: wire.lastMessage
       ? {
@@ -661,6 +677,53 @@ function receiveMessage(state: ChatState, wire: MessageWire): ChatState {
  * The conversation tail is refreshed but the unread count is not touched, so a message deleted
  * for everyone updates the sidebar preview to its tombstone without marking anything unread.
  */
+/**
+ * Records that one member's read marker moved.
+ *
+ * DELIBERATELY NARROW. Only `members[].lastReadAt` changes: the conversation keeps its place in
+ * the list, its unread count, its preview and every message in it. Somebody reading is not an
+ * event in the conversation, and the sidebar must not so much as flicker because of it.
+ *
+ * A null watermark (a group, where the server withholds it) is ignored rather than written: it
+ * would otherwise erase a value the conversation list had legitimately supplied.
+ */
+function applyReadMarker(
+  state: ChatState,
+  conversationId: string,
+  userId: string,
+  lastReadAt: string | null,
+): ChatState {
+  if (lastReadAt === null) return state;
+
+  const conversation = state.conversations.find((item) => item.id === conversationId);
+  if (!conversation) return state;
+  if (!conversation.members.some((member) => member.userId === userId)) return state;
+
+  return {
+    ...state,
+    conversations: state.conversations.map((item) =>
+      item.id === conversationId
+        ? {
+            ...item,
+            members: item.members.map((member) =>
+              member.userId === userId
+                ? // Only ever forward. An out-of-order event from a reconnect must not un-see a
+                  // message the sender has already been told was seen.
+                  {
+                    ...member,
+                    lastReadAt:
+                      member.lastReadAt === null || lastReadAt > member.lastReadAt
+                        ? lastReadAt
+                        : member.lastReadAt,
+                  }
+                : member,
+            ),
+          }
+        : item,
+    ),
+  };
+}
+
 function updateMessage(state: ChatState, wire: MessageWire): ChatState {
   const existing = state.messagesByConversation[wire.conversationId];
   if (!existing?.some((item) => item.id === wire.id)) return state;
@@ -939,6 +1002,59 @@ export function selectSelectedConversation(state: ChatState): Conversation | nul
 
 export function selectMessages(state: ChatState, conversationId: string): ChatMessage[] {
   return state.messagesByConversation[conversationId] ?? [];
+}
+
+/**
+ * The one message that should carry a "Seen" mark in a direct conversation (Batch 1.3).
+ *
+ * WHY ONE, NOT ALL. Three messages sent in a row, all read, should read:
+ *
+ *     Hello
+ *     Are you there?
+ *     Please check this
+ *                  Seen
+ *
+ * and not stamp "Seen" under every bubble. The marker is a watermark, so everything above the
+ * marked message is read as well — saying so three times adds no information and a lot of noise.
+ * This returns the NEWEST own message the other participant's marker has reached; the interface
+ * renders the mark under that one only.
+ *
+ * DIRECT CONVERSATIONS ONLY. A group returns null: the server withholds group watermarks, and a
+ * per-member list under every message is exactly what the group design replaces with Message info.
+ *
+ * NEVER THE SENDER'S OWN MARKER. The other participant is found by excluding the caller, so
+ * opening your own conversation can never make your own message look seen.
+ *
+ * Timestamps compare as strings, which is safe here and not a shortcut: both sides are produced
+ * by `Date.toISOString()`, whose fixed `YYYY-MM-DDTHH:mm:ss.sssZ` shape sorts lexicographically
+ * in exactly chronological order.
+ */
+export function selectSeenMessageId(
+  state: ChatState,
+  conversationId: string,
+  currentUserId: string,
+): string | null {
+  const conversation = state.conversations.find((item) => item.id === conversationId);
+  if (!conversation || conversation.type !== 'DIRECT') return null;
+
+  const other = conversation.members.find((member) => member.userId !== currentUserId);
+  const watermark = other?.lastReadAt;
+  if (!watermark) return null;
+
+  const messages = state.messagesByConversation[conversationId] ?? [];
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+    // Mine, actually sent, still a message, and inside their read watermark.
+    if (message.senderId !== currentUserId) continue;
+    if (message.kind === 'SYSTEM') continue;
+    if (message.deliveryState !== 'SENT') continue;
+    if (message.deletedAt !== null) continue;
+    if (message.createdAt <= watermark) return message.id;
+  }
+
+  return null;
 }
 
 export function selectHistoryState(state: ChatState, conversationId: string): HistoryState {

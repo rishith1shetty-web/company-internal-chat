@@ -5,6 +5,7 @@ import {
   EditIcon,
   EmojiIcon,
   ForwardIcon,
+  InfoIcon,
   PinIcon,
   ReplyIcon,
   TrashIcon,
@@ -14,7 +15,7 @@ import { cn } from '@/lib/ui/cn';
 import { useAnchoredMenu } from '@/lib/ui/useAnchoredMenu';
 
 export interface MessageMenuAction {
-  key: 'reply' | 'copy' | 'edit' | 'react' | 'forward' | 'pin' | 'delete';
+  key: 'reply' | 'copy' | 'edit' | 'react' | 'forward' | 'pin' | 'info' | 'delete';
   label: string;
   /** Hidden entirely rather than disabled: a greyed row invites a click that cannot work. */
   available: boolean;
@@ -135,5 +136,6 @@ function MenuIconFor({ action }: { action: MessageMenuAction['key'] }) {
   if (action === 'react') return <EmojiIcon className={className} />;
   if (action === 'forward') return <ForwardIcon className={className} />;
   if (action === 'pin') return <PinIcon className={className} />;
+  if (action === 'info') return <InfoIcon className={className} />;
   return <TrashIcon className={className} />;
 }

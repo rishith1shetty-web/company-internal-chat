@@ -9,6 +9,7 @@ import { EmptyChatState } from '@/components/chat/EmptyChatState';
 import { MessageComposer } from '@/components/chat/MessageComposer';
 import { MessageList } from '@/components/chat/MessageList';
 import { DeleteDialog, ForwardDialog } from '@/components/chat/MessageDialogs';
+import { MessageInfoDialog } from '@/components/chat/MessageInfoDialog';
 import { PinnedBanner } from '@/components/chat/PinnedBanner';
 import {
   AddMembersDialog,
@@ -32,6 +33,7 @@ import {
   selectDirectoryUsers,
   selectHistoryState,
   selectMessages,
+  selectSeenMessageId,
   selectSelectedConversation,
   selectSharedFiles,
   selectUploads,
@@ -121,6 +123,8 @@ export function ChatWorkspace() {
 
   /** The message a dialog is acting on. One piece of state per dialog, never a shared "mode". */
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  /** The message whose group read status is open, or null (Batch 1.3). */
+  const [messageInfo, setMessageInfo] = useState<ChatMessage | null>(null);
   const [deleting, setDeleting] = useState<ChatMessage | null>(null);
   const [forwardInFlight, setForwardInFlight] = useState(false);
   /** Briefly outlines a message after jumping to it, so the eye can find it. */
@@ -378,9 +382,16 @@ export function ChatWorkspace() {
                   onTogglePin: session.togglePin,
                   onRequestDelete: setDeleting,
                   onJumpToMessage: jumpToMessage,
+                  onShowInfo: setMessageInfo,
                 }}
                 usersById={usersById}
                 showSenderNames={selectedConversation.type === 'GROUP'}
+                isGroup={selectedConversation.type === 'GROUP'}
+                seenMessageId={selectSeenMessageId(
+                  state,
+                  selectedConversation.id,
+                  currentUser.id,
+                )}
                 conversationId={selectedConversation.id}
                 loading={history?.loading ?? false}
                 loaded={history?.loaded ?? false}
@@ -525,6 +536,16 @@ export function ChatWorkspace() {
             setForwarding(null);
           });
         }}
+      />
+
+      <MessageInfoDialog
+        /* Keyed by message: opening a different one mounts a fresh panel rather than briefly
+           showing the previous message's readers while the new answer is fetched. */
+        key={messageInfo?.id ?? 'closed'}
+        message={messageInfo}
+        load={session.readStatusFor}
+        subscribe={session.subscribeToReadNudges}
+        onClose={() => setMessageInfo(null)}
       />
 
       <DeleteDialog

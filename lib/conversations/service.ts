@@ -77,7 +77,19 @@ export interface ConversationSummary {
   name: string | null;
   createdAt: Date;
   lastMessageAt: Date | null;
-  members: { userId: string; role: 'OWNER' | 'MEMBER'; joinedAt: Date }[];
+  members: {
+    userId: string;
+    role: 'OWNER' | 'MEMBER';
+    joinedAt: Date;
+    /**
+     * The member's read watermark — DIRECT conversations only, null in groups (Batch 1.3).
+     *
+     * Withheld in groups on purpose: every member's watermark handed to every member would make
+     * per-member read status computable by anybody, which `GET /api/messages/:id/info` restricts
+     * to the sender.
+     */
+    lastReadAt: Date | null;
+  }[];
   /** The newest message inside the caller's visible window, for the sidebar preview. */
   lastMessage: MessagePreview | null;
   unreadCount: number;
@@ -218,7 +230,7 @@ export async function listConversationsForUser(
           lastMessageAt: true,
           members: {
             where: { leftAt: null },
-            select: { userId: true, role: true, joinedAt: true },
+            select: { userId: true, role: true, joinedAt: true, lastReadAt: true },
           },
         },
       },
@@ -243,6 +255,8 @@ export async function listConversationsForUser(
       userId: member.userId,
       role: member.role,
       joinedAt: member.joinedAt,
+      // The gate. A group's watermarks never leave the server through this route.
+      lastReadAt: conversation.type === 'DIRECT' ? member.lastReadAt : null,
     })),
     lastMessage: previews.get(conversation.id) ?? null,
     unreadCount: unread.get(conversation.id) ?? 0,
@@ -331,11 +345,43 @@ async function countUnread(
   return counts;
 }
 
+/**
+ * Who should hear that somebody read, and whether the watermark may travel with it (Batch 1.3).
+ *
+ * A separate call rather than extra fields on `markConversationRead`, and made only when the
+ * marker actually moved — which is the uncommon path. Re-opening a conversation already read to
+ * the end asks nothing extra of the database.
+ */
+export async function readAnnouncementFor(
+  db: PrismaClient,
+  conversationId: string,
+): Promise<{ type: 'DIRECT' | 'GROUP'; audienceIds: string[] }> {
+  const conversation = await db.conversation.findUnique({
+    where: { id: conversationId },
+    select: { type: true, members: { where: { leftAt: null }, select: { userId: true } } },
+  });
+
+  if (!conversation) return { type: 'GROUP', audienceIds: [] };
+
+  return {
+    type: conversation.type,
+    audienceIds: conversation.members.map((member) => member.userId),
+  };
+}
+
 export interface ReadMarkerResult {
   conversationId: string;
   lastReadMessageId: string;
   lastReadAt: Date;
   unreadCount: number;
+  /**
+   * True when this call actually advanced the marker (Batch 1.3).
+   *
+   * The caller announces a read only when something changed. Opening a conversation you have
+   * already read to the end is a no-op, and broadcasting it would put a steady trickle of events
+   * on the wire that tell nobody anything.
+   */
+  moved: boolean;
 }
 
 /**
@@ -405,6 +451,7 @@ export async function markConversationRead(
       : message.id,
     lastReadAt: effectiveReadAt,
     unreadCount,
+    moved: !alreadyPastIt,
   };
 }
 
