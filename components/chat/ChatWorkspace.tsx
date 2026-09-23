@@ -40,6 +40,7 @@ import {
   selectUsersById,
 } from '@/lib/chat/state';
 import { useChatSession } from '@/lib/chat/useChatSession';
+import { useGlobalSearch } from '@/lib/chat/useGlobalSearch';
 import { desktopClientScope } from '@/lib/notifications/electron';
 import type { NotificationPreferences } from '@/lib/notifications/preferences';
 import { useNotifications } from '@/lib/notifications/useNotifications';
@@ -140,11 +141,12 @@ export function ChatWorkspace() {
    */
   const jumpToMessage = useCallback((messageId: string) => {
     const element = document.getElementById(`message-${messageId}`);
-    if (!element) return;
+    if (!element) return false;
 
     element.scrollIntoView({ block: 'center', behavior: 'smooth' });
     setHighlightedMessageId(messageId);
     window.setTimeout(() => setHighlightedMessageId(null), 1600);
+    return true;
   }, []);
   /*
    * Removing somebody from a group — or leaving one — is confirmed first.
@@ -167,6 +169,51 @@ export function ChatWorkspace() {
 
   const usersById = useMemo(() => selectUsersById(state), [state]);
   const listEntries = useMemo(() => selectConversationListEntries(state), [state]);
+
+  /*
+   * Global search (Batch 1.6), driven by the same box that filters the list above it.
+   *
+   * The hook owns the debounce, the abort and the stale-response guard; everything here does is
+   * hand it the term and hand the result to the sidebar. A search failure lands in `search.error`
+   * and nowhere else — it cannot reach this component's own state, so it cannot take the
+   * conversation, the composer or the socket down with it.
+   */
+  const search = useGlobalSearch(state.searchTerm);
+
+  /**
+   * A message a search result asked to jump to, waiting for its conversation's history to render.
+   *
+   * Selecting a conversation loads its history asynchronously, so the element does not exist at
+   * the moment of the click. Rather than guess at a delay, the request is parked here and the
+   * effect below tries once each time the loaded messages change.
+   */
+  const pendingJumpRef = useRef<{ conversationId: string; messageId: string } | null>(null);
+  const selectedId = state.selectedConversationId;
+  const loadedMessages = selectedId === null ? null : selectMessages(state, selectedId);
+
+  /*
+   * Tries the parked jump each time the open conversation's loaded history changes.
+   *
+   * It gives up quietly when the message is not there, which is the common case for an old
+   * result: under D-03 the history is paged, and a match from months ago is simply not on screen.
+   * Paging backwards until it turned up could take many requests and is exactly the "brittle
+   * scroll behaviour" worth not inventing — so the conversation opens at its latest messages and
+   * the employee is where they asked to be, if not at the exact line.
+   *
+   * The request is dropped once the conversation changes, so a jump can never fire into the
+   * wrong conversation later.
+   */
+  useEffect(() => {
+    const pending = pendingJumpRef.current;
+    if (!pending) return;
+
+    if (pending.conversationId !== selectedId) {
+      pendingJumpRef.current = null;
+      return;
+    }
+
+    if (jumpToMessage(pending.messageId)) pendingJumpRef.current = null;
+  }, [selectedId, loadedMessages, jumpToMessage]);
   const directoryUsers = useMemo(() => selectDirectoryUsers(state), [state]);
   const selectedConversation = selectSelectedConversation(state);
   const currentUser = state.currentUser;
@@ -240,6 +287,26 @@ export function ChatWorkspace() {
 
   const startDirectConversation = (otherUserId: string) => {
     void session.startDirectConversation(otherUserId);
+  };
+
+  /*
+   * Clicking a PERSON result.
+   *
+   * The same call the New-chat picker makes, deliberately. It resolves to the existing direct
+   * conversation when there is one and creates it otherwise — the uniqueness of
+   * `Conversation.directKey` is what makes a duplicate impossible, in the database rather than in
+   * a check here that could be raced.
+   */
+  const openPersonFromSearch = (userId: string) => {
+    void session.startDirectConversation(userId);
+    setSidebarOpen(false);
+  };
+
+  /** Clicking a MESSAGE or FILE result: open the conversation, then try to land on the message. */
+  const openSearchResult = (conversationId: string, messageId?: string) => {
+    pendingJumpRef.current =
+      messageId === undefined ? null : { conversationId, messageId };
+    selectConversation(conversationId);
   };
 
   const selectedTitle = selectedConversation
@@ -345,6 +412,9 @@ export function ChatWorkspace() {
             onNewChat={openNewChat}
             onNewGroup={openNewGroup}
             onClose={() => setSidebarOpen(false)}
+            search={search}
+            onOpenPerson={openPersonFromSearch}
+            onOpenSearchResult={openSearchResult}
           />
         </aside>
 

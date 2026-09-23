@@ -395,3 +395,63 @@ export interface PinnedMessagesWire {
 export const REACTION_EMOJI = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
 
 export type ReactionEmoji = (typeof REACTION_EMOJI)[number];
+
+/* ------------------------------------------------------------------------------------------- */
+/* Global search (Batch 1.6)                                                                     */
+/* ------------------------------------------------------------------------------------------- */
+
+/**
+ * `GET /api/search?q=…` — results grouped by category.
+ *
+ * Every row here has already passed the caller's authorization window server-side
+ * (lib/search/service.ts). The browser does no filtering of its own and must never be given
+ * anything it would have to hide: what arrives is what may be shown.
+ *
+ * Deliberately absent: storage keys, filesystem paths, MIME types, byte sizes, device and session
+ * data, and any id the interface does not need in order to navigate.
+ */
+export interface SearchPersonWire {
+  id: string;
+  displayName: string;
+  lastSeenAt: string;
+}
+
+export interface SearchGroupWire {
+  conversationId: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface SearchMessageWire {
+  id: string;
+  conversationId: string;
+  conversationType: 'DIRECT' | 'GROUP';
+  /** The group's name; null for a direct conversation, which the browser titles itself. */
+  conversationName: string | null;
+  senderId: string | null;
+  senderName: string | null;
+  /** The message's current text. */
+  body: string;
+  createdAt: string;
+}
+
+export interface SearchFileWire {
+  attachmentId: string;
+  messageId: string;
+  conversationId: string;
+  conversationType: 'DIRECT' | 'GROUP';
+  conversationName: string | null;
+  filename: string;
+  senderId: string | null;
+  senderName: string | null;
+  createdAt: string;
+}
+
+export interface SearchResultsWire {
+  /** The query these results answer, echoed so a late response can be matched to its request. */
+  query: string;
+  people: SearchPersonWire[];
+  groups: SearchGroupWire[];
+  messages: SearchMessageWire[];
+  files: SearchFileWire[];
+}

@@ -245,7 +245,14 @@ describe('the top of the sidebar is untouched', () => {
 
   it('still has the heading, the search box and both creation buttons', () => {
     expect(text).toContain('Conversations');
-    expect(text).toContain('placeholder="Search conversations"');
+    /*
+     * The box itself, not its wording. Batch 1.6 widened what it searches — message text,
+     * filenames and colleagues as well as the conversation list — and renamed the placeholder to
+     * say so. What this assertion is for is that there is still exactly ONE search field here and
+     * that it did not get replaced by a second one.
+     */
+    expect(text.match(/<SearchField/g)).toHaveLength(1);
+    expect(text).toContain('placeholder="Search messages, files and people"');
     expect(text).toContain('New chat');
     expect(text).toContain('New group');
   });

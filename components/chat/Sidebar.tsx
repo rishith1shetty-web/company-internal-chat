@@ -1,9 +1,11 @@
 'use client';
 
 import { ConversationList } from '@/components/chat/ConversationList';
+import { SearchResults } from '@/components/chat/SearchResults';
 import { Button, IconButton } from '@/components/ui/Button';
 import { SearchField } from '@/components/ui/Field';
 import { CloseIcon, GroupIcon, NewChatIcon } from '@/components/ui/icons';
+import type { SearchState } from '@/lib/chat/search';
 import type { ConversationListEntry } from '@/lib/chat/state';
 
 interface SidebarProps {
@@ -16,6 +18,10 @@ interface SidebarProps {
   onNewGroup: () => void;
   /** Small screens only: the sidebar is an overlay there and needs a way back to the chat. */
   onClose: () => void;
+  /** Global search, from the server (Batch 1.6). Idle until the query is long enough. */
+  search: SearchState;
+  onOpenPerson: (userId: string) => void;
+  onOpenSearchResult: (conversationId: string, messageId?: string) => void;
 }
 
 /** Conversation navigation: search, the two creation actions, and the conversation list. */
@@ -28,6 +34,9 @@ export function Sidebar({
   onNewChat,
   onNewGroup,
   onClose,
+  search,
+  onOpenPerson,
+  onOpenSearchResult,
 }: SidebarProps) {
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
@@ -44,11 +53,30 @@ export function Sidebar({
           Conversations
         </p>
 
+        {/*
+          ONE SEARCH BOX, doing two things at once (Batch 1.6).
+
+          It keeps filtering the conversation list instantly and locally, exactly as before — that
+          is the common case, it costs nothing, and it is what finds "the chat with Raj". The same
+          keystrokes also drive the server-side search below the list, which finds what the local
+          filter cannot: message text, filenames, and colleagues you have never messaged.
+
+          A second box was the alternative and was rejected: two search fields in one sidebar make
+          the employee choose which kind of search they are doing before they know what they are
+          looking for.
+        */}
         <SearchField
-          label="Search conversations and people"
-          placeholder="Search conversations"
+          label="Search messages, files, people and conversations"
+          placeholder="Search messages, files and people"
           value={searchTerm}
           onChange={(event) => onSearchChange(event.target.value)}
+          onKeyDown={(event) => {
+            // Escape clears, which is what it does in every other search field an employee uses.
+            if (event.key === 'Escape' && searchTerm.length > 0) {
+              event.stopPropagation();
+              onSearchChange('');
+            }
+          }}
         />
 
         <div className="mt-2 flex gap-2">
@@ -69,6 +97,16 @@ export function Sidebar({
           selectedConversationId={selectedConversationId}
           onSelect={onSelectConversation}
           searchTerm={searchTerm}
+        />
+
+        {/*
+          Below the conversation sections, never instead of them: clearing the box removes this
+          region and leaves the sidebar exactly as Batch 1.4 renders it.
+        */}
+        <SearchResults
+          state={search}
+          onOpenPerson={onOpenPerson}
+          onOpenConversation={onOpenSearchResult}
         />
       </nav>
 

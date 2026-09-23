@@ -30,6 +30,7 @@ import type {
   MessageMutationWire,
   MessageReadStatusWire,
   PinnedMessagesWire,
+  SearchResultsWire,
 } from '@/lib/chat/wire';
 
 /** A failed request, carrying a message that is already safe to show a user. */
@@ -52,6 +53,21 @@ export class ApiError extends Error {
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 
+/**
+ * Whether a thrown value is a cancelled request rather than a failed one.
+ *
+ * Checked by `name` rather than with `instanceof DOMException`: Safari, Chrome and the Node
+ * runtime the tests use do not all reject with the same constructor, and every one of them sets
+ * `name` to `'AbortError'`.
+ */
+export function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
@@ -62,7 +78,17 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
       credentials: 'same-origin',
       ...init,
     });
-  } catch {
+  } catch (error) {
+    /*
+     * A deliberate cancellation is not a failure (Batch 1.6).
+     *
+     * Search aborts the previous request on every keystroke, and each abort rejects here. Turning
+     * those into a network error would make an employee typing normally see "Cannot reach the
+     * chat server" — so the abort is re-thrown as itself and the caller decides, which is the
+     * only place that knows whether it did the cancelling.
+     */
+    if (isAbortError(error)) throw error;
+
     // A dropped network or a stopped server. Deliberately not the browser's error text, which
     // varies per engine and says nothing useful to an employee.
     throw new ApiError(0, 'NETWORK', 'Cannot reach the chat server. Check your connection.');
@@ -456,5 +482,30 @@ export function forwardMessage(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ destinations }),
+  });
+}
+
+/* ------------------------------------------------------------------------------------------- */
+/* Global search (Batch 1.6)                                                                     */
+/* ------------------------------------------------------------------------------------------- */
+
+/**
+ * Searches people, groups, messages and filenames.
+ *
+ * The `signal` is what makes typing cheap: when the next keystroke supersedes this request, the
+ * caller aborts it and the browser stops waiting for a response nobody will use. An abort is NOT
+ * a failure and must not be shown as one — `AbortError` is re-thrown unchanged so the caller can
+ * tell it apart from a real one, which `request` could not do because it turns every thrown
+ * fetch into a network `ApiError`.
+ *
+ * The term travels as a query parameter and is encoded here; the server binds it as a parameter
+ * and never concatenates it into SQL.
+ */
+export function searchEverything(
+  query: string,
+  signal?: AbortSignal,
+): Promise<SearchResultsWire> {
+  return request<SearchResultsWire>(`/api/search?q=${encodeURIComponent(query)}`, {
+    ...(signal ? { signal } : {}),
   });
 }
