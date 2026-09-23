@@ -178,7 +178,13 @@ describe('a platform spelling correction becomes the text that is sent', () => {
      * assertions pin.
      */
     expect(text).toContain('value={body}');
-    expect(text).toContain('onChange={(event) => setBody(event.target.value)}');
+    /*
+     * The CALL, not its formatting. Batch 1.7 gave the handler a second statement — it also
+     * re-reads the caret to decide whether an `@…` is being typed — so the one-line form this
+     * used to pin is gone. What matters here is unchanged: every keystroke, and every edit the
+     * platform makes for a spelling correction, still flows through `setBody`.
+     */
+    expect(text).toContain('setBody(event.target.value)');
     expect(code(COMPOSER)).not.toContain('defaultValue');
     expect(code(COMPOSER)).not.toContain('readOnly');
   });

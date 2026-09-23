@@ -38,6 +38,7 @@ import {
 import type { Logger } from '../logging/logger';
 import { describeError } from '../logging/logger';
 import { SendMessageError, sendMessage, type StoredMessage } from '../messages/service';
+import { MentionError } from '../messages/mentions';
 import type { NetworkGate } from '../net/gate';
 import {
   SOCKET_PATH,
@@ -113,6 +114,20 @@ function toSocketError(error: unknown): SocketError {
         // distinguishable from one that does not exist.
         return { code: 'FORBIDDEN', message: error.message };
     }
+  }
+
+  /*
+   * A refused mention list (Batch 1.7). `INVALID_PAYLOAD` rather than `INTERNAL_ERROR`, because
+   * it IS the payload that was wrong — and it must not be logged as a server fault every time a
+   * client sends something malformed.
+   *
+   * Only `NOT_A_MEMBER` and `NOT_A_GROUP` carry their own wording, both of which say something
+   * the sender could act on. The rest deliberately share one opaque message: distinguishing "your
+   * offsets are wrong" from "that person is not in this group" would turn the composer into a way
+   * of probing group membership one request at a time.
+   */
+  if (error instanceof MentionError) {
+    return { code: 'INVALID_PAYLOAD', message: error.message };
   }
 
   // Anything else — including a database failure — is an internal error to the browser. The
@@ -467,6 +482,8 @@ export function createRealtimeGateway(
             clientMessageId: parsed.data.clientMessageId,
             // Verified by the service against this sender's own window before it is written.
             replyToId: parsed.data.replyToId,
+            // Proposed by the composer; re-checked against the body and the live membership.
+            mentions: parsed.data.mentions,
           });
 
           const wire = toMessageWire(result.message, result.viewerJoinedAt);

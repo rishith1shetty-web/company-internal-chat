@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 
 import { ComposerContextMenu } from '@/components/chat/ComposerContextMenu';
+import { MentionPicker } from '@/components/chat/MentionPicker';
 
 import { Button, IconButton } from '@/components/ui/Button';
 import {
@@ -17,13 +18,23 @@ import {
 } from '@/components/ui/icons';
 import { canReadClipboard, pasteIntoComposer } from '@/lib/chat/clipboard';
 import { COMPOSER_SPELLCHECK, shouldUseCustomComposerMenu } from '@/lib/chat/composer-menu';
+import {
+  applyMention,
+  filterMentionCandidates,
+  findMentionTrigger,
+  resolveMentions,
+  type ConfirmedMention,
+  type MentionCandidate,
+  type MentionPayload,
+  type MentionTrigger,
+} from '@/lib/chat/mentions';
 import { formatFileSize } from '@/lib/chat/format';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
 
 interface MessageComposerProps {
   conversationTitle: string;
-  onSend: (body: string) => void;
+  onSend: (body: string, mentions: MentionPayload[]) => void;
   /** Uploads a file, with whatever was typed alongside it as a caption. */
   onSendFile: (file: File, caption?: string) => void;
   /** True while an upload from this browser is in flight, which disables sending another. */
@@ -44,7 +55,16 @@ interface MessageComposerProps {
   editTarget: ChatMessage | null;
   onCancelEdit(): void;
   /** Saves the edited text. Resolves true when the server accepted it. */
-  onSaveEdit(body: string): Promise<boolean>;
+  onSaveEdit(body: string, mentions: MentionPayload[]): Promise<boolean>;
+  /**
+   * Who can be mentioned here (Batch 1.7): the ACTIVE members of this group, minus the sender.
+   *
+   * Empty in a direct conversation, which is how the picker stays a group feature — there is
+   * nothing to suggest, so typing "@" opens nothing. Passed in already filtered because the
+   * workspace holds the conversation and the user directory; this component resolves nothing and
+   * fetches nothing, so no keystroke can become a request.
+   */
+  mentionMembers: readonly { userId: string; displayName: string }[];
 }
 
 /** Show the character counter only when the limit is close enough to matter. */
@@ -63,6 +83,7 @@ export function MessageComposer({
   editTarget,
   onCancelEdit,
   onSaveEdit,
+  mentionMembers,
 }: MessageComposerProps) {
   const [body, setBody] = useState('');
   /*
@@ -92,6 +113,18 @@ export function MessageComposer({
   } | null>(null);
   /** Said out loud only when a paste could not happen. Cleared on the next attempt. */
   const [pasteError, setPasteError] = useState<string | null>(null);
+  /**
+   * Mentions the employee has actually CHOSEN, for this draft (Batch 1.7).
+   *
+   * Not the spans — those are located in the text at send time (lib/chat/mentions.ts). This is
+   * only the list of who was picked, which is what separates a real mention from somebody typing
+   * "@" in an email address. It is a draft-scoped fact, so it is cleared whenever the draft is.
+   */
+  const [confirmed, setConfirmed] = useState<ConfirmedMention[]>([]);
+  /** The `@…` the caret is inside, or null. Recomputed from the field; never remembered. */
+  const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
+  /** Which suggestion Enter would choose. Shared by the arrow keys and the mouse. */
+  const [mentionIndex, setMentionIndex] = useState(0);
   /** Where the caret belongs once a pasted value has been rendered. */
   const pendingCursor = useRef<number | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -116,11 +149,15 @@ export function MessageComposer({
   const bodyRef = useRef(body);
   const editTargetRef = useRef(editTarget);
   const draftBeforeEdit = useRef('');
+  /** The draft's confirmed mentions, stashed alongside its text while an edit is in progress. */
+  const confirmedBeforeEdit = useRef<ConfirmedMention[]>([]);
+  const confirmedRef = useRef(confirmed);
   const previousEditingId = useRef<string | null>(null);
 
   useEffect(() => {
     bodyRef.current = body;
     editTargetRef.current = editTarget;
+    confirmedRef.current = confirmed;
   });
 
   /*
@@ -144,13 +181,42 @@ export function MessageComposer({
     if (editingId === null) {
       if (previous !== null) {
         setBody(draftBeforeEdit.current);
+        setConfirmed(confirmedBeforeEdit.current);
         draftBeforeEdit.current = '';
+        confirmedBeforeEdit.current = [];
       }
       return;
     }
 
-    if (previous === null) draftBeforeEdit.current = bodyRef.current;
-    setBody(editTargetRef.current?.body ?? '');
+    if (previous === null) {
+      draftBeforeEdit.current = bodyRef.current;
+      confirmedBeforeEdit.current = confirmedRef.current;
+    }
+
+    const target = editTargetRef.current;
+    const text = target?.body ?? '';
+    setBody(text);
+
+    /*
+     * RE-CONFIRM THE MENTIONS THE MESSAGE ALREADY HAS (Batch 1.7).
+     *
+     * Without this, editing "@Nilesh please review" to fix a typo elsewhere would save a message
+     * with no mentions at all: the confirmed set starts empty, so `resolveMentions` would find
+     * nothing to match and the server would replace the rows with none. Editing must not quietly
+     * un-mention somebody.
+     *
+     * The label is read back out of the text at the stored offsets, which is exactly the text
+     * that was sent — so a person renamed since then keeps the name the message actually says,
+     * and re-saving preserves it rather than rewriting history.
+     */
+    setConfirmed(
+      (target?.mentions ?? []).map((mention) => ({
+        userId: mention.userId,
+        label: text.slice(mention.start + 1, mention.end),
+        kind: mention.kind,
+      })),
+    );
+
     textAreaRef.current?.focus();
   }, [editingId]);
 
@@ -251,6 +317,57 @@ export function MessageComposer({
 
   const closeComposerMenu = useCallback(() => setComposerMenu(null), []);
 
+  /*
+   * The suggestions, derived rather than stored.
+   *
+   * `mentionMembers` is empty in a direct conversation, so `candidates` is empty there too and
+   * the picker never opens — the group-only rule needs no condition of its own.
+   */
+  const mentionCandidates =
+    mentionTrigger === null ? [] : filterMentionCandidates(mentionMembers, mentionTrigger.query);
+  const mentionOpen = mentionCandidates.length > 0;
+  const activeMention = mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)];
+
+  const MENTION_LIST_ID = 'composer-mention-list';
+  const mentionOptionId = (index: number) => `${MENTION_LIST_ID}-option-${index}`;
+
+  /** Re-reads the caret and decides whether an `@…` is being typed. */
+  const syncMentionTrigger = useCallback((field: HTMLTextAreaElement) => {
+    const next = findMentionTrigger(field.value, field.selectionStart ?? 0);
+    setMentionTrigger(next);
+    setMentionIndex(0);
+  }, []);
+
+  const closeMentionPicker = useCallback(() => setMentionTrigger(null), []);
+
+  /** Puts the chosen name into the draft and remembers that it was chosen. */
+  const chooseMention = useCallback(
+    (candidate: MentionCandidate) => {
+      const field = textAreaRef.current;
+      if (!field || mentionTrigger === null) return;
+
+      const result = applyMention(
+        field.value,
+        mentionTrigger,
+        field.selectionStart ?? field.value.length,
+        candidate,
+      );
+
+      setBody(result.value);
+      pendingCursor.current = result.cursor;
+      setConfirmed((current) =>
+        current.some(
+          (item) => item.kind === result.confirmed.kind && item.userId === result.confirmed.userId,
+        )
+          ? current
+          : [...current, result.confirmed],
+      );
+      setMentionTrigger(null);
+      setMentionIndex(0);
+    },
+    [mentionTrigger],
+  );
+
   const trimmed = body.trim();
   const tooLong = body.length > MAX_MESSAGE_LENGTH;
 
@@ -311,24 +428,75 @@ export function MessageComposer({
      * clears `editTarget`, which is what restores the composer — so a failure leaves the banner,
      * the text and the cursor exactly where they were, ready to try again.
      */
+    /*
+     * Spans are located in the FINAL trimmed text — the exact string the server will store — so
+     * the offsets it re-checks are the ones it can verify (Batch 1.7).
+     */
+    const mentions = resolveMentions(trimmed, confirmed);
+
     if (editing) {
       setSaving(true);
-      void onSaveEdit(trimmed).finally(() => setSaving(false));
+      void onSaveEdit(trimmed, mentions).finally(() => setSaving(false));
       return;
     }
 
     if (file) {
+      // A caption can mention people too; it is the same body, sent the same way.
       onSendFile(file, trimmed.length > 0 ? trimmed : undefined);
       clearFile();
       setBody('');
+      setConfirmed([]);
       return;
     }
 
-    onSend(trimmed);
+    onSend(trimmed, mentions);
     setBody('');
+    setConfirmed([]);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    /*
+     * THE MENTION PICKER GETS THE KEYS FIRST, and only while it is open (Batch 1.7).
+     *
+     * This block is deliberately ahead of everything below, because the key that matters is
+     * Enter: with suggestions on screen it must CHOOSE one, and it must not send the message.
+     * Sending a half-written sentence because somebody pressed Enter to pick a name is the exact
+     * failure this ordering prevents.
+     *
+     * Every other composer key is untouched. When the picker is closed — which is nearly always —
+     * this block does nothing at all and Enter, Shift+Enter, Escape, reply and edit behave
+     * exactly as they did before.
+     */
+    if (mentionOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionIndex((index) => (index + 1) % mentionCandidates.length);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionIndex(
+          (index) => (index - 1 + mentionCandidates.length) % mentionCandidates.length,
+        );
+        return;
+      }
+      // Tab selects as well as Enter, which is what a suggestion list conventionally does.
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        if (activeMention) chooseMention(activeMention);
+        return;
+      }
+      /*
+       * Escape closes the picker and STOPS THERE — it does not fall through to cancelling a
+       * reply or an edit. One Escape, one thing dismissed; the next Escape reaches those.
+       */
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMentionPicker();
+        return;
+      }
+    }
+
     // Enter sends; Shift+Enter starts a new line — the convention staff will expect.
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -470,7 +638,7 @@ export function MessageComposer({
         */}
         <div
           className={
-            'flex items-end gap-2 rounded-panel border border-line-strong bg-surface-muted px-2 py-1.5 ' +
+            'relative flex items-end gap-2 rounded-panel border border-line-strong bg-surface-muted px-2 py-1.5 ' +
             'shadow-subtle transition-[border-color,box-shadow,background-color] ' +
             'duration-(--duration-quick) ease-(--ease-out-soft) ' +
             'focus-within:border-accent focus-within:bg-surface focus-within:ring-4 focus-within:ring-accent/12'
@@ -490,6 +658,22 @@ export function MessageComposer({
             <AttachmentIcon />
           </IconButton>
 
+          {/*
+            Anchored to the field row, so the list sits directly above the text being typed
+            rather than somewhere near the window. `relative` lives on the row; the picker
+            positions itself against it.
+          */}
+          {mentionOpen ? (
+            <MentionPicker
+              candidates={mentionCandidates}
+              activeIndex={mentionCandidates.indexOf(activeMention as MentionCandidate)}
+              onSelect={chooseMention}
+              onHoverIndex={setMentionIndex}
+              listId={MENTION_LIST_ID}
+              optionId={mentionOptionId}
+            />
+          ) : null}
+
           <label htmlFor="message-composer" className="sr-only">
             {`Message ${conversationTitle}`}
           </label>
@@ -498,7 +682,17 @@ export function MessageComposer({
             ref={textAreaRef}
             rows={1}
             value={body}
-            onChange={(event) => setBody(event.target.value)}
+            onChange={(event) => {
+              setBody(event.target.value);
+              syncMentionTrigger(event.target);
+            }}
+            /*
+             * `onSelect` fires whenever the caret moves — arrow keys, a click, a drag — so moving
+             * away from an `@…` closes the picker and moving back into one reopens it. Without
+             * this the suggestions would only track typing, and would linger over text the caret
+             * had already left.
+             */
+            onSelect={(event) => syncMentionTrigger(event.currentTarget)}
             onKeyDown={onKeyDown}
             onContextMenu={openComposerMenu}
             /*
@@ -525,6 +719,18 @@ export function MessageComposer({
             autoFocus
             aria-describedby="composer-hint"
             aria-invalid={tooLong || undefined}
+            /*
+             * The textarea IS the combobox (Batch 1.7). Focus never leaves it, so the suggestion
+             * list is described from here and the current option is named by id rather than
+             * focused — the pattern a screen reader already knows for "field with suggestions".
+             */
+            role="combobox"
+            aria-expanded={mentionOpen}
+            aria-controls={MENTION_LIST_ID}
+            aria-autocomplete="list"
+            {...(mentionOpen && activeMention
+              ? { 'aria-activedescendant': mentionOptionId(mentionCandidates.indexOf(activeMention)) }
+              : {})}
             className="max-h-40 min-h-9 flex-1 resize-none bg-transparent py-1.5 text-[0.9375rem] leading-6 text-ink placeholder:text-ink-subtle focus:outline-none"
           />
 

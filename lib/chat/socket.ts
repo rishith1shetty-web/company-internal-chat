@@ -80,6 +80,16 @@ export interface ChatSocketClient {
     clientMessageId: string;
     /** The message being replied to. Re-verified server-side before it is written. */
     replyToId?: string | undefined;
+    /**
+     * Mentions the composer resolved (Batch 1.7). Proposed, never trusted: the server re-checks
+     * every span against the stored text and every id against the group's live membership.
+     */
+    mentions?: {
+      kind: 'USER' | 'EVERYONE';
+      userId: string | null;
+      startOffset: number;
+      endOffset: number;
+    }[];
   }): Promise<Ack<MessageWire>>;
   /** Current presence of everyone the caller shares a conversation with. */
   syncPresence(): Promise<Ack<PresenceWire[]>>;

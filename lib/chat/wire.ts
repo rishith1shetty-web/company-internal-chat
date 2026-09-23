@@ -107,6 +107,26 @@ export interface ReplyPreviewWire {
   unavailable: boolean;
 }
 
+/**
+ * One mention inside a message (Batch 1.7).
+ *
+ * `userIds` of conversation members, exactly like `ReactionWire` — everyone who receives this
+ * message is a member of the conversation, and the names of its members are already in their
+ * client. So one payload serves the whole room and nothing is disclosed by it.
+ *
+ * `EVERYONE` carries no recipient list on purpose. Its audience is whoever is an active member,
+ * which each reader can answer about THEMSELVES without being told who else is included — and a
+ * server-sent "everyone" array would be a frozen copy of a live fact.
+ */
+export interface MentionWire {
+  kind: 'USER' | 'EVERYONE';
+  /** Null exactly when `kind` is `EVERYONE`. */
+  userId: string | null;
+  /** Half-open range over `MessageWire.body`, in UTF-16 code units. */
+  start: number;
+  end: number;
+}
+
 /** A message as it travels to a browser. */
 export interface MessageWire {
   id: string;
@@ -136,6 +156,11 @@ export interface MessageWire {
   deletedAt: string | null;
   /** Aggregated reactions. Empty when there are none. */
   reactions: ReactionWire[];
+  /**
+   * Mentions, ordered by offset. Empty for every message sent before Batch 1.7, for direct
+   * conversations, and for a tombstone — a deleted message has no body to point into.
+   */
+  mentions: MentionWire[];
 }
 
 export interface PresenceWire {

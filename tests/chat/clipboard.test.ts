@@ -83,6 +83,7 @@ function message(overrides: Partial<ChatMessage> = {}): ChatMessage {
     pinnedAt: null,
     deletedAt: null,
     reactions: [],
+    mentions: [],
     ...overrides,
   };
 }

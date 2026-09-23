@@ -304,8 +304,15 @@ describe('standard web, no desktop dependency, no schema change', () => {
     }
   });
 
-  it('the schema still declares exactly the models it did before this batch', () => {
+  it('SEARCH adds no model of its own to the schema', () => {
+    /*
+     * The list is the whole schema, so it moves when a LATER batch legitimately adds a model —
+     * Batch 1.7 added `MessageMention`, which is asserted in its own wiring test. What this
+     * assertion is for is narrower and still exactly true: nothing search-shaped is in here.
+     * A `SearchIndex`, a `MessageSearch` or a materialised view would fail it.
+     */
     const models = [...source(SCHEMA).matchAll(/^model (\w+)/gm)].map((match) => match[1]);
+
     expect(models).toEqual([
       'User',
       'Session',
@@ -315,8 +322,10 @@ describe('standard web, no desktop dependency, no schema change', () => {
       'Message',
       'Attachment',
       'MessageReaction',
+      'MessageMention',
       'MessageHide',
     ]);
+    expect(models.filter((name) => /search|index/i.test(name ?? ''))).toEqual([]);
   });
 });
 

@@ -17,6 +17,7 @@
 import { z } from 'zod';
 
 import { MAX_MESSAGE_LENGTH } from '../messages/service';
+import { MAX_MENTIONS_PER_MESSAGE } from '../messages/mentions';
 
 /*
  * The payload shapes live in lib/chat/wire.ts, which imports nothing and is safe for the browser
@@ -84,6 +85,25 @@ export const sendMessageSchema = z.object({
    * inside the sender's own visible window before it is written.
    */
   replyToId: uuid.optional(),
+  /**
+   * Mentions the composer proposed (Batch 1.7).
+   *
+   * Shape only. The bounds here stop an absurd payload reaching the service, and nothing more:
+   * whether a span matches the text, whether the id is in this group, and whether the
+   * conversation is even a group are all decided by `validateMentions` against the database.
+   * A client that omits this sends a message that mentions nobody, exactly as before.
+   */
+  mentions: z
+    .array(
+      z.object({
+        kind: z.enum(['USER', 'EVERYONE']),
+        userId: uuid.nullish(),
+        startOffset: z.number().int().min(0).max(MAX_MESSAGE_LENGTH),
+        endOffset: z.number().int().min(1).max(MAX_MESSAGE_LENGTH),
+      }),
+    )
+    .max(MAX_MENTIONS_PER_MESSAGE)
+    .optional(),
 });
 
 export type JoinConversationPayload = z.infer<typeof joinConversationSchema>;
@@ -249,6 +269,12 @@ export function toMessageWire(
       attachment: { originalFilename: string } | null;
     } | null;
     reactions?: { emoji: string; userId: string }[];
+    mentions?: {
+      kind: 'USER' | 'EVERYONE';
+      mentionedUserId: string | null;
+      startOffset: number;
+      endOffset: number;
+    }[];
   },
   viewerJoinedAt: Date,
 ): MessageWire {
@@ -283,6 +309,20 @@ export function toMessageWire(
     pinnedAt: message.pinnedAt?.toISOString() ?? null,
     deletedAt: message.deletedAt?.toISOString() ?? null,
     reactions: aggregateReactions(message.reactions ?? []),
+    /*
+     * Emptied under a tombstone, alongside the body and for the same reason (Batch 1.7): the
+     * offsets point into text that no longer exists, so keeping them would be metadata about a
+     * message that no longer says anything. The rows are also deleted from the database by
+     * delete-for-everyone; this is the second of the two, so an older row cannot render either.
+     */
+    mentions: deleted
+      ? []
+      : (message.mentions ?? []).map((mention) => ({
+          kind: mention.kind,
+          userId: mention.mentionedUserId,
+          start: mention.startOffset,
+          end: mention.endOffset,
+        })),
   };
 }
 

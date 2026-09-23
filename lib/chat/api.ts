@@ -411,11 +411,26 @@ export function setMessagePinned(
  * An empty string is a legitimate value: it clears the caption of a file message. The server
  * decides whether that is allowed for the message in question, and refuses it for a text message.
  */
-export function editMessage(messageId: string, body: string): Promise<MessageMutationWire> {
+export function editMessage(
+  messageId: string,
+  body: string,
+  /**
+   * The edited text's mentions — the WHOLE set, not a change to it (Batch 1.7).
+   *
+   * Always sent, including as an empty array, because omitting it is how a mention would be
+   * silently kept after the text that carried it was deleted.
+   */
+  mentions: {
+    kind: 'USER' | 'EVERYONE';
+    userId: string | null;
+    startOffset: number;
+    endOffset: number;
+  }[] = [],
+): Promise<MessageMutationWire> {
   return request<MessageMutationWire>(`/api/messages/${encodeURIComponent(messageId)}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, mentions }),
   });
 }
 

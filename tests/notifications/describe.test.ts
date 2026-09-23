@@ -35,6 +35,8 @@ function message(overrides: Partial<MessageWire> = {}): MessageWire {
     pinnedAt: null,
     deletedAt: null,
     reactions: [],
+    // No mentions unless a test adds them — which is every message before Batch 1.7.
+    mentions: [],
     ...overrides,
   };
 }

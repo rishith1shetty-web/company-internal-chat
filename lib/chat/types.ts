@@ -15,6 +15,8 @@
  *   - Display names are not unique; the UI disambiguates with a discriminator.
  */
 
+import type { MentionWire } from '@/lib/chat/wire';
+
 /** Conversation kinds. Mirrors `Conversation.type`. */
 export type ConversationType = 'DIRECT' | 'GROUP';
 
@@ -171,6 +173,14 @@ export interface ChatMessage {
    */
   deletedAt: string | null;
   reactions: MessageReaction[];
+  /**
+   * Structured mentions, ordered by offset (Batch 1.7).
+   *
+   * Empty for every message from before this batch, for direct conversations, and for a
+   * tombstone. Carried on the message itself because it arrives on the message's own payload —
+   * there is no separate mention fetch and no mention event.
+   */
+  mentions: MentionWire[];
 }
 
 /** The newest message of a conversation, as the sidebar preview needs it. */

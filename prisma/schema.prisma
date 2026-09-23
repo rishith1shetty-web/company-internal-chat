@@ -56,6 +56,17 @@ enum MessageType {
   SYSTEM
 }
 
+/// What a mention points at (Batch 1.7).
+///
+/// Two values rather than a nullable user id alone, because "@everyone" is not a user and must
+/// never be stored as though it were one: its audience is whoever is an active member AT THE
+/// MOMENT IT IS READ, which is a question answered from the membership table and not from a list
+/// frozen at send time.
+enum MentionKind {
+  USER
+  EVERYONE
+}
+
 enum AttachmentStatus {
   PENDING
   READY
@@ -99,6 +110,7 @@ model User {
   createdConversations Conversation[]       @relation("ConversationCreatedBy")
   reactions            MessageReaction[]
   hiddenMessages       MessageHide[]
+  mentionedIn          MessageMention[]    @relation("MessageMentionTarget")
   pinnedMessages       Message[]            @relation("MessagePinnedBy")
   deletedMessages      Message[]            @relation("MessageDeletedBy")
 
@@ -332,6 +344,7 @@ model Message {
   deletedBy    User?             @relation("MessageDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   reactions    MessageReaction[]
   hiddenFor    MessageHide[]
+  mentions     MessageMention[]
 
   /// The duplicate-send guard. SYSTEM messages have a null `senderId`; PostgreSQL treats NULLs
   /// as distinct in a unique index, so server-written messages never collide with each other.
@@ -418,6 +431,61 @@ model MessageReaction {
   /// Both the uniqueness rule and the lookup index for rendering a message's reactions.
   @@unique([messageId, userId])
   @@index([messageId])
+}
+
+/// One mention inside one message (Batch 1.7).
+///
+/// WHY THIS IS A TABLE AND NOT A SCAN OF THE TEXT. A mention has to survive things the text
+/// cannot: display names change, two colleagues share a name (D-02), names contain spaces, and
+/// anybody can type an `@` that means nothing. Searching the body for "@Nilesh" answers none of
+/// those, and would make who-gets-notified depend on a string comparison against a mutable
+/// column. Identity here is the `User` id, exactly as everywhere else in this schema.
+///
+/// ONE ROW PER OCCURRENCE, not per person. "@Nilesh please ask @Nilesh" stores two rows so both
+/// are highlighted where they were written; the notification layer reduces them to one recipient.
+/// That is a presentation fact and a delivery fact, and they are deliberately not the same fact.
+///
+/// THE OFFSETS ARE A HALF-OPEN RANGE over the message body, `[startOffset, endOffset)`, in UTF-16
+/// code units — the units `String.prototype.slice` uses, since the body is only ever sliced in
+/// JavaScript. They are what make rendering exact and rename-proof: the highlight is the span
+/// that was written, so a later rename changes nobody's historical text. The server validates
+/// every range against the body before it is stored, so a stored range always describes the
+/// message it belongs to.
+///
+/// NO LABEL COLUMN, deliberately. The text is already in `Message.body` at exactly these offsets,
+/// so a label would be a second copy that could disagree with the first.
+///
+/// NO `createdAt`. A mention has no lifetime of its own: it is written with its message, replaced
+/// wholesale when the message is edited, and removed when the message is deleted for everyone.
+model MessageMention {
+  id        String      @id @default(uuid(4)) @db.Uuid
+  messageId String      @db.Uuid
+  kind      MentionKind
+  /// The person mentioned. NULL exactly when `kind` is `EVERYONE`, which names no one row.
+  ///
+  /// Cascades: a mention is meaningless once the person is gone, and removing the row leaves the
+  /// message's own text untouched — the highlight goes, the sentence stays. Deleting a `User` is
+  /// not something the application offers, so this is a safety net rather than a routine path.
+  mentionedUserId String? @db.Uuid
+  /// Inclusive start of `@…` in `Message.body`.
+  startOffset     Int
+  /// Exclusive end.
+  endOffset       Int
+
+  message       Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mentionedUser User?   @relation("MessageMentionTarget", fields: [mentionedUserId], references: [id], onDelete: Cascade)
+
+  /// Two things at once, which is why it is the only index on this table.
+  ///
+  /// As a CONSTRAINT it makes duplicate mention metadata unrepresentable: two rows cannot claim
+  /// the same span of the same message, so a replayed or doubled payload cannot produce them.
+  ///
+  /// As an INDEX its leading column is `messageId`, which is the only way anything reads this
+  /// table — mentions are loaded with the message that owns them, never on their own.
+  ///
+  /// `mentionedUserId` is deliberately NOT indexed. Nothing queries "messages that mention me";
+  /// if that is ever built, the index arrives with the query that needs it rather than ahead of it.
+  @@unique([messageId, startOffset])
 }
 
 /// "Delete for me": one person has hidden one message from their own view.

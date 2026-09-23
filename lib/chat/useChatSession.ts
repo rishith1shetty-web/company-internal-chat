@@ -55,6 +55,7 @@ import {
 } from '@/lib/chat/state';
 import { newClientMessageId } from '@/lib/chat/ids';
 import { createChatSocket, type ChatSocketClient } from '@/lib/chat/socket';
+import type { MentionPayload } from '@/lib/chat/mentions';
 import type { ChatMessage } from '@/lib/chat/types';
 import type { MessageReadStatusWire, MessageWire } from '@/lib/chat/wire';
 import { conversationTitle, selectUsersById } from '@/lib/chat/state';
@@ -78,7 +79,7 @@ export interface ChatSession {
   removeMember(conversationId: string, userId: string): Promise<void>;
   /** Re-reads the colleague list, so a picker never opens on a stale directory. */
   refreshDirectory(): void;
-  sendMessage(body: string): void;
+  sendMessage(body: string, mentions?: MentionPayload[]): void;
   /** Uploads a file into the open conversation. Returns once the server has committed it. */
   sendFile(file: File, caption?: string): void;
   /** Abandons an upload still in flight. Nothing is written and no message appears. */
@@ -111,7 +112,7 @@ export interface ChatSession {
    * Edit mode is left only on success: a save that fails keeps the banner and the typing, so the
    * user can correct it and try again rather than losing what they wrote.
    */
-  saveEdit(body: string): Promise<boolean>;
+  saveEdit(body: string, mentions?: MentionPayload[]): Promise<boolean>;
   /**
    * Adds, changes or removes this user's reaction — one call, because one person has at most one
    * reaction per message. Tapping the emoji already chosen removes it.
@@ -805,6 +806,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       body: string,
       clientMessageId: string,
       replyToId?: string | undefined,
+      mentions?: MentionPayload[] | undefined,
     ) => {
       const socket = socketRef.current;
 
@@ -818,7 +820,14 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         return;
       }
 
-      const ack = await socket.sendMessage({ conversationId, body, clientMessageId, replyToId });
+      const ack = await socket.sendMessage({
+        conversationId,
+        body,
+        clientMessageId,
+        replyToId,
+        // Proposed; the server re-checks every span and every id before it stores any of them.
+        mentions,
+      });
 
       if (ack.ok) {
         dispatch({ type: 'message-acknowledged', clientMessageId, message: ack.data });
@@ -836,7 +845,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   );
 
   const sendMessage = useCallback(
-    (body: string) => {
+    (body: string, mentions: MentionPayload[] = []) => {
       const conversationId = openConversationRef.current;
       const trimmed = body.trim();
       if (!conversationId || trimmed.length === 0) return;
@@ -866,9 +875,20 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
               unavailable: false,
             }
           : null,
+        /*
+         * The optimistic bubble carries the composer's own spans so an @name is highlighted the
+         * moment it appears. They are replaced by the server's on acknowledgement, which is the
+         * authority — these are a rendering convenience and never a claim about who was notified.
+         */
+        mentions: mentions.map((mention) => ({
+          kind: mention.kind,
+          userId: mention.userId,
+          start: mention.startOffset,
+          end: mention.endOffset,
+        })),
       });
 
-      void deliver(conversationId, trimmed, clientMessageId, reply?.id);
+      void deliver(conversationId, trimmed, clientMessageId, reply?.id, mentions);
     },
     [deliver, replyTarget],
   );
@@ -1117,12 +1137,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
    * which is the difference between "try that again" and "type all of that again".
    */
   const saveEdit = useCallback(
-    async (body: string): Promise<boolean> => {
+    async (body: string, mentions: MentionPayload[] = []): Promise<boolean> => {
       const target = editTarget;
       if (!target) return false;
 
       try {
-        const result = await requestMessageEdit(target.id, body);
+        const result = await requestMessageEdit(target.id, body, mentions);
         dispatch({ type: 'message-updated', message: result.message });
         setEditing(null);
         return true;

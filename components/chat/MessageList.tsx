@@ -12,6 +12,7 @@ import {
 import { ChatIcon, ForwardIcon, PinIcon } from '@/components/ui/icons';
 import { copyTextFor, writeClipboardText } from '@/lib/chat/clipboard';
 import { formatDayLabel, formatFullTimestamp, formatTime } from '@/lib/chat/format';
+import { segmentMessageBody } from '@/lib/chat/mentions';
 import type { ChatMessage, PendingUpload, UserSummary } from '@/lib/chat/types';
 import { cn } from '@/lib/ui/cn';
 
@@ -428,6 +429,66 @@ function DayDivider({ label }: { label: string }) {
 }
 
 /**
+ * Message text, with its mentions highlighted (Batch 1.7).
+ *
+ * STILL PLAIN TEXT. Every segment is rendered as a React text node exactly as the whole body was
+ * before, so nothing here parses, interprets or sets markup — the highlight is a wrapping span
+ * chosen by OFFSETS the server validated, never by anything found in the characters. An `@` an
+ * employee typed themselves is not a mention and is not styled as one.
+ *
+ * Three weights, because a mention is worth noticing in inverse proportion to how much it
+ * concerns you: one that names YOU is filled, so it is findable while scrolling; everybody
+ * else's is tinted; and inside your own outgoing bubble it is underlined instead, because the
+ * accent fill would disappear against the bubble's own colour.
+ *
+ * `segmentMessageBody` is defensive about malformed spans and falls back to plain text, so a
+ * message from an older or newer build renders in full either way.
+ */
+function MessageBody({
+  body,
+  mentions,
+  currentUserId,
+  isOwn,
+}: {
+  body: string;
+  mentions: ChatMessage['mentions'];
+  currentUserId: string;
+  isOwn: boolean;
+}) {
+  const segments = segmentMessageBody(body, mentions);
+
+  // The overwhelmingly common case: no mentions at all, and one text node exactly as before.
+  if (segments.length === 1 && segments[0]?.mention === null) return <>{body}</>;
+
+  return (
+    <>
+      {segments.map((segment, index) => {
+        if (!segment.mention) return <span key={index}>{segment.text}</span>;
+
+        const aboutMe =
+          segment.mention.kind === 'EVERYONE' || segment.mention.userId === currentUserId;
+
+        return (
+          <span
+            key={index}
+            className={cn(
+              'rounded px-0.5 font-medium',
+              isOwn
+                ? 'underline decoration-current/50 underline-offset-2'
+                : aboutMe
+                  ? 'bg-accent/18 text-accent-strong'
+                  : 'text-accent',
+            )}
+          >
+            {segment.text}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/**
  * Membership and group events. Rendered as plain text, centred, and never attributed to a
  * sender — the server writes these, not a user.
  */
@@ -586,7 +647,14 @@ function MessageBubble({
                 <AttachmentCard attachment={message.attachment} isOwn={isOwn} />
               ) : null}
               {message.body ? (
-                <span className={cn('block', message.attachment && 'mt-2')}>{message.body}</span>
+                <span className={cn('block', message.attachment && 'mt-2')}>
+                  <MessageBody
+                    body={message.body}
+                    mentions={message.mentions}
+                    currentUserId={currentUserId}
+                    isOwn={isOwn}
+                  />
+                </span>
               ) : null}
             </>
           )}

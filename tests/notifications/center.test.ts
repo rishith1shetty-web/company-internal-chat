@@ -176,6 +176,7 @@ function event(overrides: Partial<IncomingMessageEvent> = {}): IncomingMessageEv
     isOwnMessage: false,
     isSystemMessage: false,
     isOpenConversation: false,
+    mentionsMe: false,
     ...overrides,
   };
 }

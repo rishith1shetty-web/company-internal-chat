@@ -180,6 +180,7 @@ export function ChatWorkspace() {
    */
   const search = useGlobalSearch(state.searchTerm);
 
+
   /**
    * A message a search result asked to jump to, waiting for its conversation's history to render.
    *
@@ -217,6 +218,31 @@ export function ChatWorkspace() {
   const directoryUsers = useMemo(() => selectDirectoryUsers(state), [state]);
   const selectedConversation = selectSelectedConversation(state);
   const currentUser = state.currentUser;
+  /**
+   * Who the composer may offer as a mention (Batch 1.7).
+   *
+   * ACTIVE members of the open GROUP, minus the sender, with their current display names — built
+   * from state the workspace already holds, so typing "@" costs no request. `conversation.members`
+   * is exactly the active set: the server's conversation list filters `leftAt IS NULL`, so a
+   * departed colleague is not in it and cannot be suggested.
+   *
+   * Empty for a direct conversation, which is how mentions stay a group feature — there is
+   * nothing to suggest, so the picker never opens. Empty is also what a member with no resolved
+   * name produces, rather than a row reading "undefined".
+   *
+   * The sender is excluded because mentioning yourself notifies nobody; the server would drop it
+   * from the recipients anyway, so offering it would only ever waste a choice.
+   */
+  const mentionMembers = useMemo(() => {
+    if (!selectedConversation || selectedConversation.type !== 'GROUP' || !currentUser) return [];
+
+    return selectedConversation.members
+      .filter((member) => member.userId !== currentUser.id)
+      .flatMap((member) => {
+        const user = usersById.get(member.userId);
+        return user ? [{ userId: user.id, displayName: user.displayName }] : [];
+      });
+  }, [selectedConversation, currentUser, usersById]);
 
   /*
    * Clicking a notification opens its conversation — through the same call the sidebar makes.
@@ -488,6 +514,7 @@ export function ChatWorkspace() {
                 editTarget={session.editTarget}
                 onCancelEdit={session.cancelEdit}
                 onSaveEdit={session.saveEdit}
+                mentionMembers={mentionMembers}
               />
             </>
           ) : (

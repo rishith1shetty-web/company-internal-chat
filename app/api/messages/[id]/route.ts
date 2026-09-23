@@ -27,6 +27,7 @@ import { getDb } from '@/lib/db/prisma';
 import { forbidden, invalidRequest, readJsonBody, withIdentity } from '@/lib/http/route-helpers';
 import { toMessageWireFromRow } from '@/lib/http/serialize';
 import { MessageActionError, editMessage } from '@/lib/messages/actions';
+import { MentionError, MAX_MENTIONS_PER_MESSAGE } from '@/lib/messages/mentions';
 import { MAX_MESSAGE_LENGTH } from '@/lib/messages/service';
 import { notifyMessageUpdated } from '@/lib/realtime/notify';
 
@@ -44,6 +45,24 @@ const uuid = z.uuid({ version: 'v4' });
  */
 const bodySchema = z.strictObject({
   body: z.string().max(MAX_MESSAGE_LENGTH),
+  /**
+   * The edited text's mentions (Batch 1.7). Shape only — `validateMentions` decides whether the
+   * spans match the stored text and whether each id is in this group, from the database.
+   *
+   * Optional so a client that predates the field still edits successfully; absent means the
+   * edited message mentions nobody, which is the safe reading of silence.
+   */
+  mentions: z
+    .array(
+      z.object({
+        kind: z.enum(['USER', 'EVERYONE']),
+        userId: z.union([uuid, z.null()]).optional(),
+        startOffset: z.number().int().min(0).max(MAX_MESSAGE_LENGTH),
+        endOffset: z.number().int().min(1).max(MAX_MESSAGE_LENGTH),
+      }),
+    )
+    .max(MAX_MENTIONS_PER_MESSAGE)
+    .optional(),
 });
 
 export async function PATCH(
@@ -63,6 +82,8 @@ export async function PATCH(
         userId: current.userId,
         messageId: id,
         body: parsed.data.body,
+        // Proposed; re-checked against the stored text and this group's live membership.
+        mentions: parsed.data.mentions,
       });
 
       notifyMessageUpdated({ conversationId: message.conversationId, message });
@@ -71,6 +92,9 @@ export async function PATCH(
         message: toMessageWireFromRow(message, membership.joinedAt),
       } satisfies MessageMutationWire);
     } catch (error) {
+      // A refused mention list is a bad request, not a server fault (Batch 1.7).
+      if (error instanceof MentionError) return invalidRequest(error.message);
+
       if (error instanceof MessageActionError) {
         /*
          * "No such message", "not a member", "before you joined" and "not yours" all answer the

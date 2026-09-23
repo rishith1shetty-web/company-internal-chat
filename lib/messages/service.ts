@@ -13,6 +13,7 @@
 
 import { Prisma, type PrismaClient } from '../../prisma/generated/client';
 import { findActiveMembership } from '../authz/membership';
+import { validateMentions, writeMentions, type MentionInput } from './mentions';
 
 /** Server-side message length limit. The UI applies the same number; the server decides. */
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -54,6 +55,15 @@ export interface SendMessageInput {
    * rendered to everyone here.
    */
   replyToId?: string | undefined;
+  /**
+   * Batch 1.7: mentions the sender's composer proposed.
+   *
+   * PROPOSED, not trusted. `validateMentions` re-checks every span against the body this service
+   * is about to store and every id against the conversation's live membership, and refuses the
+   * send outright if they disagree. Absent or empty means the message mentions nobody, which is
+   * what every message before this batch is.
+   */
+  mentions?: readonly MentionInput[] | undefined;
 }
 
 /**
@@ -90,6 +100,15 @@ export interface StoredReaction {
   userId: string;
 }
 
+/** One stored mention: what it points at, and where in the body it was written (Batch 1.7). */
+export interface StoredMention {
+  kind: 'USER' | 'EVERYONE';
+  /** Null exactly when `kind` is `EVERYONE`. */
+  mentionedUserId: string | null;
+  startOffset: number;
+  endOffset: number;
+}
+
 export interface StoredMessage {
   id: string;
   conversationId: string;
@@ -108,6 +127,8 @@ export interface StoredMessage {
   pinnedAt: Date | null;
   deletedAt: Date | null;
   reactions: StoredReaction[];
+  /** Batch 1.7. Empty for every message sent before this batch, and for most sent after it. */
+  mentions: StoredMention[];
 }
 
 export interface SendMessageResult {
@@ -163,6 +184,21 @@ export async function sendMessage(
     });
   }
 
+  /*
+   * Mentions are validated against the TRIMMED body — the exact string about to be stored, not
+   * the one the composer had. Validating the untrimmed text would let a leading space shift every
+   * offset by one and put the highlights a character out (Batch 1.7).
+   *
+   * This runs before the transaction because it is a read: nothing is written until every span
+   * and every id has been checked, so a refused mention list leaves no message behind.
+   */
+  const mentions = await validateMentions(db, {
+    conversationId: input.conversationId,
+    conversationType: membership.conversationType,
+    body,
+    mentions: input.mentions ?? [],
+  });
+
   try {
     const message = await db.$transaction(async (tx) => {
       const created = await tx.message.create({
@@ -178,6 +214,9 @@ export async function sendMessage(
         select: messageSelection,
       });
 
+      // Same transaction as the message: a message is never briefly visible without its mentions.
+      await writeMentions(tx, created.id, mentions);
+
       // Same transaction as the insert, so the denormalised ordering column cannot drift from
       // the messages it orders (docs/02-database.md §5).
       await tx.conversation.update({
@@ -185,7 +224,12 @@ export async function sendMessage(
         data: { lastMessageAt: created.createdAt },
       });
 
-      return created;
+      /*
+       * `created` was selected before the mentions existed, so its `mentions` is empty. They are
+       * attached from what was just written rather than re-read: these are the rows that went in,
+       * in the same transaction, so a second query could only return the same answer more slowly.
+       */
+      return { ...created, mentions };
     });
 
     return { message, viewerJoinedAt: membership.joinedAt, duplicate: false };
@@ -258,6 +302,17 @@ export const messageSelection = {
   reactions: {
     select: { emoji: true, userId: true },
     orderBy: { createdAt: 'asc' },
+  },
+  /*
+   * Mentions travel with the message that owns them (Batch 1.7), on the same read and the same
+   * broadcast — there is no second query, no second event and no separate mention payload.
+   *
+   * Ordered by offset so the renderer can walk the body once, left to right, without sorting.
+   * Bounded by MAX_MENTIONS_PER_MESSAGE, so this join cannot grow a page of history.
+   */
+  mentions: {
+    select: { kind: true, mentionedUserId: true, startOffset: true, endOffset: true },
+    orderBy: { startOffset: 'asc' },
   },
 } as const;
 

@@ -29,6 +29,7 @@ import type {
 } from '@/lib/chat/types';
 import type {
   ConversationWire,
+  MentionWire,
   MessageWire,
   PresenceWire,
   UserWire,
@@ -153,6 +154,8 @@ export type ChatAction =
       now: string;
       /** The quoted message, so the optimistic bubble shows the reply before the server answers. */
       replyTo?: ReplyPreview | null;
+      /** Resolved by the composer, so an @name is highlighted immediately (Batch 1.7). */
+      mentions?: MentionWire[];
     }
   | { type: 'message-acknowledged'; clientMessageId: string; message: MessageWire }
   | { type: 'message-retrying'; conversationId: string; clientMessageId: string }
@@ -437,6 +440,8 @@ export function toChatMessage(wire: MessageWire, deliveryState: DeliveryState = 
     pinnedAt: wire.pinnedAt,
     deletedAt: wire.deletedAt,
     reactions: wire.reactions,
+    // Defaulted, so a payload from a build without mentions still maps cleanly.
+    mentions: wire.mentions ?? [],
   };
 }
 
@@ -603,6 +608,12 @@ function queueMessage(
     pinnedAt: null,
     deletedAt: null,
     reactions: [],
+    /*
+     * The optimistic copy carries the mentions the composer resolved, so an @name is highlighted
+     * the instant it appears rather than flickering into place when the server acknowledges it.
+     * The acknowledgement replaces this row with the server's own, which is the authority.
+     */
+    mentions: action.mentions ?? [],
   };
 
   return insertMessage(state, optimistic, { countAsUnread: false });

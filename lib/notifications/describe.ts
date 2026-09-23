@@ -20,6 +20,7 @@
  * the server emitted into a room it verified this socket belongs to. Nothing here can widen that.
  */
 
+import { mentionsEveryone, mentionsUser } from '../chat/mentions';
 import type { MessageWire } from '../chat/wire';
 
 /** How much of a message a preview shows before it is cut. Two lines' worth at toast width. */
@@ -46,6 +47,14 @@ export interface IncomingMessageEvent {
   isSystemMessage: boolean;
   /** Whether the employee is looking at this conversation right now. */
   isOpenConversation: boolean;
+  /**
+   * Whether this message mentions the reader (Batch 1.7).
+   *
+   * PRESENTATION ONLY. It changes the second line's wording and nothing else — not whether there
+   * is a notification, not the sound, not the surface, not the unread count. One arrived message
+   * is one notification event, mentioned or not; `planNotification` never sees this field.
+   */
+  mentionsMe: boolean;
 }
 
 /** What the caller must look up. Kept narrow so this can be tested without a whole chat state. */
@@ -80,12 +89,20 @@ export function describeIncomingMessage(
   const isSystemMessage = message.type === 'SYSTEM';
   const filename = message.attachment?.filename ?? null;
   const sender = input.senderName;
+  const mentionsMe = mentionsUser(message.mentions, input.currentUserId, message.senderId);
 
   return {
     messageId: message.id,
     conversationId: message.conversationId,
     title: input.conversationTitle,
-    body: bodyFor({ isGroup: input.isGroup, sender, filename, text: message.body }),
+    body: bodyFor({
+      isGroup: input.isGroup,
+      sender,
+      filename,
+      text: message.body,
+      mentionsMe,
+      everyone: mentionsMe && mentionsEveryone(message.mentions),
+    }),
     senderId: message.senderId,
     senderName: sender,
     isGroup: input.isGroup,
@@ -94,6 +111,7 @@ export function describeIncomingMessage(
     isOwnMessage,
     isSystemMessage,
     isOpenConversation: input.isOpenConversation,
+    mentionsMe,
   };
 }
 
@@ -109,11 +127,15 @@ function bodyFor({
   sender,
   filename,
   text,
+  mentionsMe,
+  everyone,
 }: {
   isGroup: boolean;
   sender: string | null;
   filename: string | null;
   text: string | null;
+  mentionsMe: boolean;
+  everyone: boolean;
 }): string {
   const who = sender ?? 'Someone';
 
@@ -128,6 +150,22 @@ function bodyFor({
 
   const preview = previewOf(text);
   const line = preview.length > 0 ? preview : 'Sent a message';
+
+  /*
+   * A mention says so, in words, in the line somebody actually reads (Batch 1.7).
+   *
+   * "@everyone" is distinguished from being named personally rather than collapsed into it —
+   * "mentioned everyone" is a different and much less urgent fact than "mentioned you", and
+   * presenting a group announcement as a personal summons is how people learn to distrust the
+   * notification.
+   *
+   * Only the WORDING changes here. Whether this notification happens at all, whether it chimes,
+   * and which surface it uses are decided by `planNotification`, which knows nothing about
+   * mentions and is deliberately left that way.
+   */
+  if (mentionsMe) {
+    return everyone ? `${who} mentioned everyone: ${line}` : `${who} mentioned you: ${line}`;
+  }
 
   return isGroup ? `${who}: ${line}` : line;
 }

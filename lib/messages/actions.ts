@@ -34,6 +34,7 @@ import {
   type StoredFile,
 } from '../files/storage';
 import { MAX_MESSAGE_LENGTH, messageSelection, type StoredMessage } from './service';
+import { replaceMentions, validateMentions, type MentionInput } from './mentions';
 
 /** Prisma's unique-constraint violation. */
 const UNIQUE_VIOLATION = 'P2002';
@@ -338,7 +339,24 @@ export async function listPinnedMessages(
  */
 export async function editMessage(
   db: PrismaClient,
-  input: { userId: string; messageId: string; body: string },
+  input: {
+    userId: string;
+    messageId: string;
+    body: string;
+    /**
+     * Batch 1.7: the mentions the edited text now carries — the WHOLE set, not a change to it.
+     *
+     * Editing replaces mentions wholesale because the offsets of every surviving one move when
+     * the text around them changes. Omitting this (or sending an empty list) is how a mention is
+     * removed: "@Nilesh please review" edited to "please review" simply arrives with none.
+     *
+     * AN EDIT IS STILL NOT A SEND. Adding a mention here writes the row and updates what is
+     * rendered; it raises no notification, no sound, no unread increment and no reordering,
+     * because an edit travels on `message:updated` — which has never been a notification — and
+     * this function does not touch `lastMessageAt`.
+     */
+    mentions?: readonly MentionInput[] | undefined;
+  },
 ): Promise<MessageActionResult> {
   const { message, membership } = await loadAccessibleMessage(db, input.userId, input.messageId);
 
@@ -409,9 +427,33 @@ export async function editMessage(
     return { message: await readMessageForWire(db, input.messageId), membership };
   }
 
-  const updated = await db.message.updateMany({
-    where: { id: input.messageId, senderId: input.userId, deletedAt: null },
-    data: { body: nextBody, editedAt: new Date() },
+  /*
+   * Validated against `nextBody` — the text about to be stored — before anything is written, so
+   * a refused mention list leaves the message exactly as it was (Batch 1.7).
+   *
+   * `nextBody` is null when an edit clears a file message's caption; there is then no text for a
+   * mention to point into, so the set is empty and the old rows are removed.
+   */
+  const mentions =
+    nextBody === null
+      ? []
+      : await validateMentions(db, {
+          conversationId: message.conversationId,
+          conversationType: membership.conversationType,
+          body: nextBody,
+          mentions: input.mentions ?? [],
+        });
+
+  const updated = await db.$transaction(async (tx) => {
+    const result = await tx.message.updateMany({
+      where: { id: input.messageId, senderId: input.userId, deletedAt: null },
+      data: { body: nextBody, editedAt: new Date() },
+    });
+
+    // One transaction, so the text and the spans that point into it are never briefly out of step.
+    if (result.count > 0) await replaceMentions(tx, input.messageId, mentions);
+
+    return result;
   });
 
   // Nothing matched: the message was deleted for everyone between the read above and this write.
@@ -540,6 +582,13 @@ export async function deleteMessageForEveryone(
     });
 
     await tx.messageReaction.deleteMany({ where: { messageId: input.messageId } });
+
+    /*
+     * Mentions go with the text they pointed into (Batch 1.7). The body is cleared above, so the
+     * offsets would describe a string that no longer exists — and a tombstone must not keep
+     * telling anybody who was named in what it used to say.
+     */
+    await tx.messageMention.deleteMany({ where: { messageId: input.messageId } });
 
     if (attachment) {
       await tx.attachment.update({
