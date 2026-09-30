@@ -411,6 +411,21 @@ export interface ConversationReadWire {
   lastReadAt: string | null;
 }
 
+/**
+ * `typing:update` — somebody started or stopped typing in a conversation this user is in
+ * (Batch 1.8).
+ *
+ * A change, not a set: it is emitted only when a user BECOMES typing or STOPS, never for the
+ * composer's heartbeat, and never to the typer's own sockets. Ephemeral — nothing about it is
+ * stored anywhere, and a reconnecting client simply starts from "nobody is typing".
+ */
+export interface TypingWire {
+  conversationId: string;
+  /** Who is typing. Never the recipient of this event. */
+  userId: string;
+  typing: boolean;
+}
+
 /** `GET /api/conversations/:id/pins` — pinned messages, newest pin first. */
 export interface PinnedMessagesWire {
   messages: MessageWire[];

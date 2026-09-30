@@ -302,7 +302,7 @@ export interface RunningServer {
 
 /** An HTTP server with the real gateway attached. Next.js is not involved. */
 export async function startTestServer(
-  options: { presenceGraceMs?: number } = {},
+  options: { presenceGraceMs?: number; typingTtlMs?: number } = {},
 ): Promise<RunningServer> {
   const httpServer = createServer((_req, res) => {
     res.statusCode = 404;
@@ -314,6 +314,7 @@ export async function startTestServer(
     logger: silentLogger(),
     identity: IDENTITY_CONFIG,
     presenceGraceMs: options.presenceGraceMs ?? TEST_PRESENCE_GRACE_MS,
+    ...(options.typingTtlMs === undefined ? {} : { typingTtlMs: options.typingTtlMs }),
   });
 
   await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));

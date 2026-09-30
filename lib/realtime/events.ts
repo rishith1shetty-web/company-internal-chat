@@ -37,6 +37,7 @@ export type {
   SessionWire,
   SocketError,
   SocketErrorCode,
+  TypingWire,
 } from '../chat/wire';
 
 import type {
@@ -50,6 +51,7 @@ import type {
   ReplyPreviewWire,
   SessionWire,
   SocketError,
+  TypingWire,
 } from '../chat/wire';
 
 /* ------------------------------------------------------------------------------------------- */
@@ -106,6 +108,11 @@ export const sendMessageSchema = z.object({
     .optional(),
 });
 
+/** `typing:start` and `typing:stop` (Batch 1.8). The conversation and nothing else — never a user. */
+export const typingSchema = z.object({
+  conversationId: uuid,
+});
+
 export type JoinConversationPayload = z.infer<typeof joinConversationSchema>;
 export type LeaveConversationPayload = z.infer<typeof leaveConversationSchema>;
 export type SendMessagePayload = z.infer<typeof sendMessageSchema>;
@@ -141,6 +148,18 @@ export interface ClientToServerEvents {
    * stored message — including the server-assigned id and timestamp.
    */
   'message:send': (payload: unknown, ack: (response: Ack<MessageWire>) => void) => void;
+
+  /**
+   * This user is typing in a conversation (Batch 1.8). Also the composer's heartbeat.
+   *
+   * Fire-and-forget, no acknowledgement: a lost start costs one missing "is typing…", which is
+   * not worth a round trip per keystroke burst. Authorized against the database like a join; the
+   * sender is the socket's own identity, and nothing is stored.
+   */
+  'typing:start': (payload: unknown) => void;
+
+  /** This user stopped typing in a conversation. Grants nothing, so it needs no authorization. */
+  'typing:stop': (payload: unknown) => void;
 }
 
 export interface ServerToClientEvents {
@@ -206,6 +225,15 @@ export interface ServerToClientEvents {
    * it too. Nobody else is told, because for everybody else nothing happened.
    */
   'message:hidden': (payload: { conversationId: string; messageId: string }) => void;
+
+  /**
+   * Somebody started or stopped typing in a conversation this socket is in (Batch 1.8).
+   *
+   * Emitted into the conversation room — whose membership the server maintains from the database
+   * — minus the typer's own sockets. Only on a change; never for a heartbeat. NEVER A
+   * NOTIFICATION: no sound, no toast, no unread, no reordering.
+   */
+  'typing:update': (payload: TypingWire) => void;
 
   /** An error that is not the answer to a specific request (e.g. a failed re-authorization). */
   'server:error': (payload: SocketError) => void;

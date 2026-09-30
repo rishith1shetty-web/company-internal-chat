@@ -21,6 +21,7 @@ import {
 import { NotificationToasts } from '@/components/chat/NotificationToasts';
 import { Sidebar } from '@/components/chat/Sidebar';
 import { SettingsDialog } from '@/components/chat/SystemDialogs';
+import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { UnassignedDeviceScreen } from '@/components/chat/UnassignedDeviceScreen';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { BrandLockup } from '@/components/brand/Logo';
@@ -243,6 +244,37 @@ export function ChatWorkspace() {
         return user ? [{ userId: user.id, displayName: user.displayName }] : [];
       });
   }, [selectedConversation, currentUser, usersById]);
+
+  /**
+   * Who is typing in the OPEN conversation, by name (Batch 1.8).
+   *
+   * Only the open conversation: typing state for any other one is never shown, so it can never
+   * appear in the wrong place. The current user is excluded here as well as by the server, and an
+   * id with no known name is skipped rather than shown as "undefined".
+   */
+  const selectedConversationId = selectedConversation?.id ?? null;
+  const currentUserId = currentUser?.id ?? null;
+  const typingUserIds = selectedConversationId
+    ? state.typingByConversation[selectedConversationId]
+    : undefined;
+  const typingNames = useMemo(
+    () =>
+      (typingUserIds ?? []).flatMap((userId) => {
+        if (userId === currentUserId) return [];
+        const name = usersById.get(userId)?.displayName;
+        return name ? [name] : [];
+      }),
+    [typingUserIds, currentUserId, usersById],
+  );
+
+  /** The composer's typing signal, addressed to the conversation it belongs to. */
+  const sendTyping = session.sendTyping;
+  const onTypingChange = useCallback(
+    (typing: boolean) => {
+      if (selectedConversationId) sendTyping(selectedConversationId, typing);
+    },
+    [selectedConversationId, sendTyping],
+  );
 
   /*
    * Clicking a notification opens its conversation — through the same call the sidebar makes.
@@ -499,6 +531,8 @@ export function ChatWorkspace() {
                 onDismissUpload={session.dismissUpload}
               />
 
+              <TypingIndicator names={typingNames} />
+
               <MessageComposer
                 /* Remounting per conversation gives each one a fresh, empty composer. */
                 key={selectedConversation.id}
@@ -515,6 +549,7 @@ export function ChatWorkspace() {
                 onCancelEdit={session.cancelEdit}
                 onSaveEdit={session.saveEdit}
                 mentionMembers={mentionMembers}
+                onTypingChange={onTypingChange}
               />
             </>
           ) : (

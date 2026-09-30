@@ -28,6 +28,7 @@ import type {
   PresenceWire,
   SessionWire,
   SocketError,
+  TypingWire,
 } from '@/lib/chat/wire';
 import type { ClientToServerEvents, ServerToClientEvents } from '@/lib/realtime/events';
 
@@ -68,6 +69,11 @@ export interface ChatSocketHandlers {
    * conversation is taken from the socket; this is a nudge, not a payload.
    */
   onConversationChanged(payload: ConversationChangedWire): void;
+  /**
+   * Somebody started or stopped typing (Batch 1.8). Never a notification: straight to the
+   * reducer, never to the notification policy.
+   */
+  onTyping(payload: TypingWire): void;
   /** An out-of-band failure, e.g. the session was revoked while the socket was open. */
   onServerError(payload: SocketError): void;
 }
@@ -93,6 +99,13 @@ export interface ChatSocketClient {
   }): Promise<Ack<MessageWire>>;
   /** Current presence of everyone the caller shares a conversation with. */
   syncPresence(): Promise<Ack<PresenceWire[]>>;
+  /**
+   * Says this user started or stopped typing in a conversation (Batch 1.8).
+   *
+   * Fire-and-forget: no acknowledgement, and nothing at all while disconnected — a typing signal
+   * that arrives late is worse than one that never arrives.
+   */
+  sendTyping(conversationId: string, typing: boolean): void;
   close(): void;
 }
 
@@ -135,6 +148,7 @@ export function createChatSocket(handlers: ChatSocketHandlers): ChatSocketClient
   socket.on('conversation:read', handlers.onConversationRead);
   socket.on('presence:update', handlers.onPresence);
   socket.on('conversation:changed', handlers.onConversationChanged);
+  socket.on('typing:update', handlers.onTyping);
   socket.on('server:error', handlers.onServerError);
 
   /**
@@ -179,6 +193,11 @@ export function createChatSocket(handlers: ChatSocketHandlers): ChatSocketClient
 
     syncPresence() {
       return emitWithAck<PresenceWire[]>('presence:sync', {});
+    },
+
+    sendTyping(conversationId, typing) {
+      if (!socket.connected) return;
+      socket.emit(typing ? 'typing:start' : 'typing:stop', { conversationId });
     },
 
     close() {

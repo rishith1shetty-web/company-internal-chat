@@ -118,6 +118,14 @@ export interface ChatState {
    * arrives as `message:updated`, which carries everything needed to add or remove the entry.
    */
   pinnedByConversation: Record<string, ChatMessage[]>;
+  /**
+   * Who is typing, per conversation, in the order they started (Batch 1.8).
+   *
+   * Ephemeral and socket-fed only: never read over REST, never stored. Emptied whenever the
+   * connection is not online, because the server clears everything a dropped socket had and a
+   * reconnecting client must not keep showing what it can no longer hear the end of.
+   */
+  typingByConversation: Record<string, string[]>;
   /** A failure the user should be told about, cleared when it stops being true. */
   notice: string | null;
 }
@@ -186,6 +194,7 @@ export type ChatAction =
     }
   | { type: 'presence-changed'; entries: PresenceWire[] }
   | { type: 'connection-changed'; connection: ConnectionState }
+  | { type: 'typing-changed'; conversationId: string; userId: string; typing: boolean }
   | { type: 'unread-cleared'; conversationId: string; unreadCount: number }
   | {
       type: 'upload-started';
@@ -216,6 +225,7 @@ export const initialChatState: ChatState = {
   uploads: {},
   attachments: {},
   pinnedByConversation: {},
+  typingByConversation: {},
   notice: null,
 };
 
@@ -316,7 +326,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return applyPresence(state, action.entries);
 
     case 'connection-changed':
-      return { ...state, connection: action.connection };
+      return {
+        ...state,
+        connection: action.connection,
+        typingByConversation: action.connection === 'online' ? state.typingByConversation : {},
+      };
+
+    case 'typing-changed':
+      return applyTyping(state, action.conversationId, action.userId, action.typing);
 
     case 'unread-cleared':
       return {
@@ -417,6 +434,30 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     default:
       return state;
   }
+}
+
+/**
+ * Records that somebody started or stopped typing (Batch 1.8).
+ *
+ * Returns the SAME state object when nothing changed — a repeated start or a stop for somebody not
+ * shown — so a redundant event re-renders nothing.
+ */
+function applyTyping(
+  state: ChatState,
+  conversationId: string,
+  userId: string,
+  typing: boolean,
+): ChatState {
+  const current = state.typingByConversation[conversationId] ?? [];
+  const present = current.includes(userId);
+  if (typing === present) return state;
+
+  const next = typing ? [...current, userId] : current.filter((id) => id !== userId);
+  const typingByConversation = { ...state.typingByConversation };
+  if (next.length > 0) typingByConversation[conversationId] = next;
+  else delete typingByConversation[conversationId];
+
+  return { ...state, typingByConversation };
 }
 
 /* ------------------------------------------------------------------------------------------- */

@@ -144,6 +144,14 @@ export interface ChatSession {
   subscribeToReadNudges(
     handler: (conversationId: string, userId: string) => void,
   ): () => void;
+  /* ------------------------------------------- typing indicators (Batch 1.8) ---------------- */
+  /**
+   * Tells the conversation's other members this user started or stopped typing.
+   *
+   * Called by the composer's typing signal, which already throttles it to a start, a heartbeat
+   * every few seconds and a stop — never once per key. Nothing is sent while offline.
+   */
+  sendTyping(conversationId: string, typing: boolean): void;
   searchDirectory(term: string): void;
   setSearchTerm(term: string): void;
   dismissNotice(): void;
@@ -604,6 +612,16 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       },
 
       /*
+       * Somebody started or stopped typing (Batch 1.8).
+       *
+       * Straight to the reducer and deliberately NOT to `announce`: typing is not a message, so
+       * there is no sound, no toast, no unread change and no reordering.
+       */
+      onTyping({ conversationId, userId, typing }) {
+        dispatch({ type: 'typing-changed', conversationId, userId, typing });
+      },
+
+      /*
        * A group was created, somebody was added, or somebody left.
        *
        * The event says only which conversation, so everything is re-read through the authorized
@@ -1035,6 +1053,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     })();
   }, []);
 
+  /** Typing start/stop for a conversation (Batch 1.8). Throttled by the composer, not here. */
+  const sendTyping = useCallback((conversationId: string, typing: boolean) => {
+    socketRef.current?.sendTyping(conversationId, typing);
+  }, []);
+
   const searchDirectory = useCallback(
     (term: string) => {
       void loadDirectory(term);
@@ -1325,6 +1348,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     dismissUpload,
     retryMessage,
     loadOlderMessages,
+    sendTyping,
     searchDirectory,
     setSearchTerm,
     dismissNotice,

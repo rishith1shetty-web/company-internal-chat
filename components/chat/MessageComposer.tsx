@@ -29,6 +29,7 @@ import {
   type MentionTrigger,
 } from '@/lib/chat/mentions';
 import { formatFileSize } from '@/lib/chat/format';
+import { createTypingSignal, type TypingSignal } from '@/lib/chat/typing';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
 
@@ -65,6 +66,14 @@ interface MessageComposerProps {
    * fetches nothing, so no keystroke can become a request.
    */
   mentionMembers: readonly { userId: string; displayName: string }[];
+  /**
+   * This user started or stopped typing here (Batch 1.8).
+   *
+   * Already throttled when it is called — a start, a heartbeat every few seconds, a stop — so the
+   * caller can send it straight to the socket. Never called while editing: correcting an old
+   * message is not "typing" anything new.
+   */
+  onTypingChange(typing: boolean): void;
 }
 
 /** Show the character counter only when the limit is close enough to matter. */
@@ -84,6 +93,7 @@ export function MessageComposer({
   onCancelEdit,
   onSaveEdit,
   mentionMembers,
+  onTypingChange,
 }: MessageComposerProps) {
   const [body, setBody] = useState('');
   /*
@@ -153,12 +163,35 @@ export function MessageComposer({
   const confirmedBeforeEdit = useRef<ConfirmedMention[]>([]);
   const confirmedRef = useRef(confirmed);
   const previousEditingId = useRef<string | null>(null);
+  const onTypingChangeRef = useRef(onTypingChange);
 
   useEffect(() => {
     bodyRef.current = body;
     editTargetRef.current = editTarget;
     confirmedRef.current = confirmed;
+    onTypingChangeRef.current = onTypingChange;
   });
+
+  /*
+   * The typing signal (Batch 1.8): one per composer, and the composer is remounted per
+   * conversation — so unmounting it is exactly "left this conversation", and the stop below is
+   * what clears the old conversation's indicator when the user switches to another one.
+   */
+  const typingSignalRef = useRef<TypingSignal | null>(null);
+  useEffect(() => {
+    const signal = createTypingSignal((typing) => onTypingChangeRef.current(typing));
+    typingSignalRef.current = signal;
+    return () => {
+      signal.stop();
+      typingSignalRef.current = null;
+    };
+  }, []);
+
+  /** The user changed the draft. Editing an old message is not typing a new one. */
+  const noteTyping = useCallback((text: string) => {
+    if (editTargetRef.current !== null) return;
+    typingSignalRef.current?.input(text);
+  }, []);
 
   /*
    * Entering and leaving edit mode.
@@ -191,6 +224,8 @@ export function MessageComposer({
     if (previous === null) {
       draftBeforeEdit.current = bodyRef.current;
       confirmedBeforeEdit.current = confirmedRef.current;
+      // The draft is set aside, and so is any "is typing…" it had started.
+      typingSignalRef.current?.stop();
     }
 
     const target = editTargetRef.current;
@@ -285,8 +320,9 @@ export function MessageComposer({
 
       setBody(outcome.value);
       pendingCursor.current = outcome.cursor;
+      noteTyping(outcome.value);
     },
-    [],
+    [noteTyping],
   );
 
   /**
@@ -355,6 +391,7 @@ export function MessageComposer({
 
       setBody(result.value);
       pendingCursor.current = result.cursor;
+      noteTyping(result.value);
       setConfirmed((current) =>
         current.some(
           (item) => item.kind === result.confirmed.kind && item.userId === result.confirmed.userId,
@@ -365,7 +402,7 @@ export function MessageComposer({
       setMentionTrigger(null);
       setMentionIndex(0);
     },
-    [mentionTrigger],
+    [mentionTrigger, noteTyping],
   );
 
   const trimmed = body.trim();
@@ -439,6 +476,9 @@ export function MessageComposer({
       void onSaveEdit(trimmed, mentions).finally(() => setSaving(false));
       return;
     }
+
+    // Sending ends the typing, before the message leaves (Batch 1.8).
+    typingSignalRef.current?.stop();
 
     if (file) {
       // A caption can mention people too; it is the same body, sent the same way.
@@ -685,6 +725,7 @@ export function MessageComposer({
             onChange={(event) => {
               setBody(event.target.value);
               syncMentionTrigger(event.target);
+              noteTyping(event.target.value);
             }}
             /*
              * `onSelect` fires whenever the caret moves — arrow keys, a click, a drag — so moving

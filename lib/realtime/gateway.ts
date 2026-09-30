@@ -12,6 +12,7 @@
  *   join       →  findActiveMembership() → room            (never on the client's say-so)
  *   send       →  membership + validate → commit → ack → broadcast
  *   changed    →  a committed membership change (over HTTP) → tell the members to re-read
+ *   typing     →  findActiveMembership() → in-memory only → room, minus the typer (Batch 1.8)
  *
  * Nothing is broadcast before PostgreSQL has committed the row: the real-time layer is a delivery
  * accelerator, never the source of truth.
@@ -46,6 +47,7 @@ import {
   leaveConversationSchema,
   sendMessageSchema,
   toMessageWire,
+  typingSchema,
   type Ack,
   type ClientToServerEvents,
   type ServerToClientEvents,
@@ -60,6 +62,7 @@ import {
   type RealtimeNotifier,
 } from './notify';
 import { PresenceTracker } from './presence';
+import { TypingTracker } from './typing';
 
 type ChatSocket = Socket<ClientToServerEvents, ServerToClientEvents, never, SocketData>;
 export type ChatServer = Server<ClientToServerEvents, ServerToClientEvents, never, SocketData>;
@@ -70,6 +73,8 @@ export interface GatewayDependencies {
   identity: IdentityConfig;
   /** Overridable so tests do not have to wait out the real presence grace period. */
   presenceGraceMs?: number;
+  /** Overridable so tests do not have to wait out the real typing expiry (Batch 1.8). */
+  typingTtlMs?: number;
   /**
    * The network gate (Phase 8).
    *
@@ -83,8 +88,18 @@ export interface GatewayDependencies {
 export interface RealtimeGateway {
   io: ChatServer;
   presence: PresenceTracker;
+  typing: TypingTracker;
   close(): Promise<void>;
 }
+
+/**
+ * The least time between two `typing:start`s from one socket for one conversation that are
+ * actually looked at (Batch 1.8).
+ *
+ * The composer sends one every few seconds while somebody types; anything faster is a client
+ * misbehaving, and ignoring it keeps a flood from becoming a membership query per event.
+ */
+const TYPING_START_MIN_INTERVAL_MS = 1_000;
 
 /** Room naming. Centralised so a room name is never assembled ad hoc at a call site. */
 export const rooms = {
@@ -194,6 +209,15 @@ export function createRealtimeGateway(
   const presence = new PresenceTracker(
     deps.presenceGraceMs === undefined ? {} : { graceMs: deps.presenceGraceMs },
   );
+
+  /*
+   * Typing state (Batch 1.8). In memory only; an expiry is announced exactly like a stop, so a
+   * window that vanished without saying so cannot leave "is typing…" on anybody's screen.
+   */
+  const typing = new TypingTracker({
+    ...(deps.typingTtlMs === undefined ? {} : { ttlMs: deps.typingTtlMs }),
+    onExpire: ({ conversationId, userId }) => broadcastTyping(conversationId, userId, false),
+  });
 
   if (!gate) {
     logger.warn('Realtime gateway created without a network gate: socket access is unrestricted');
@@ -364,6 +388,74 @@ export function createRealtimeGateway(
     const { userId } = socket.data;
 
     /*
+     * TYPING (Batch 1.8).
+     *
+     * The two events are applied strictly in the order they arrived, through a per-socket queue.
+     * A start has to await its membership check and a stop does not, so without the queue a quick
+     * start-then-stop would let the stop land first and the start afterwards — leaving somebody
+     * "typing" on everybody else's screen until the expiry cleared it.
+     */
+    let typingQueue: Promise<void> = Promise.resolve();
+    const lastTypingStartAt = new Map<string, number>();
+
+    function enqueueTyping(step: () => Promise<void> | void): void {
+      typingQueue = typingQueue.then(step).catch((error: unknown) => {
+        logger.warn('Typing event failed', { userId, ...describeError(error) });
+      });
+    }
+
+    socket.on('typing:start', (payload) => {
+      const parsed = typingSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const { conversationId } = parsed.data;
+
+      const now = Date.now();
+      const previous = lastTypingStartAt.get(conversationId);
+      if (previous !== undefined && now - previous < TYPING_START_MIN_INTERVAL_MS) return;
+      lastTypingStartAt.set(conversationId, now);
+
+      enqueueTyping(async () => {
+        // The same authorization a room join gets. A non-member is ignored in silence: answering
+        // would tell them whether the conversation exists.
+        const membership = await findActiveMembership(db, userId, conversationId);
+        if (!membership) return;
+        // Disconnected while the check ran: its disconnect has already been processed, and
+        // recording it now would leave a typing state no socket can ever stop.
+        if (!socket.connected) return;
+
+        if (typing.start(conversationId, userId, socket.id)) {
+          broadcastTyping(conversationId, userId, true);
+        }
+      });
+    });
+
+    socket.on('typing:stop', (payload) => {
+      const parsed = typingSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const { conversationId } = parsed.data;
+
+      enqueueTyping(() => {
+        // A stop always clears the throttle, so the next start after it is never swallowed.
+        lastTypingStartAt.delete(conversationId);
+        if (typing.stop(conversationId, userId, socket.id)) {
+          broadcastTyping(conversationId, userId, false);
+        }
+      });
+    });
+
+    /*
+     * Registered here, synchronously, rather than with the presence handler after the connection
+     * setup: a socket that drops during setup must still have its typing cleared.
+     */
+    socket.on('disconnect', () => {
+      enqueueTyping(() => {
+        for (const stopped of typing.removeSocket(socket.id)) {
+          broadcastTyping(stopped.conversationId, stopped.userId, false);
+        }
+      });
+    });
+
+    /*
      * Presence snapshot.
      *
      * `presence:update` covers changes, but a client that has just connected knows nothing about
@@ -498,6 +590,7 @@ export function createRealtimeGateway(
               userId,
               conversationId: wire.conversationId,
             });
+            enqueueTyping(() => clearTypingAfterSend(wire.conversationId, userId));
             return;
           }
 
@@ -534,6 +627,10 @@ export function createRealtimeGateway(
               excludeUserId: userId,
             });
           }
+
+          // After the message, so a colleague's indicator gives way to the words it announced.
+          // Queued, so a start still being authorized cannot re-arm it afterwards.
+          enqueueTyping(() => clearTypingAfterSend(wire.conversationId, userId));
         } catch (error) {
           const socketError = toSocketError(error);
           if (socketError.code === 'INTERNAL_ERROR') {
@@ -602,6 +699,28 @@ export function createRealtimeGateway(
         ...describeError(error),
       });
     }
+  }
+
+  /**
+   * Tells a conversation that somebody started or stopped typing (Batch 1.8).
+   *
+   * Into the conversation room — maintained from the database, so it holds active members only and
+   * a removed member was taken out of it by `conversationChanged` — and never to the typer's own
+   * sockets: nobody is shown their own indicator. Never throws; typing is decoration.
+   */
+  function broadcastTyping(conversationId: string, userId: string, isTyping: boolean): void {
+    try {
+      io.to(rooms.conversation(conversationId))
+        .except(rooms.user(userId))
+        .emit('typing:update', { conversationId, userId, typing: isTyping });
+    } catch (error) {
+      logger.warn('Could not deliver a typing update', { conversationId, ...describeError(error) });
+    }
+  }
+
+  /** A sent message ends the typing that preceded it, in every one of the sender's windows. */
+  function clearTypingAfterSend(conversationId: string, userId: string): void {
+    if (typing.stopUser(conversationId, userId)) broadcastTyping(conversationId, userId, false);
   }
 
   async function ensureMembersInRoom(conversationId: string, senderId: string): Promise<void> {
@@ -679,6 +798,10 @@ export function createRealtimeGateway(
       for (const userId of change.removedIds ?? []) {
         io.to(rooms.user(userId)).emit('conversation:changed', payload);
         io.in(rooms.user(userId)).socketsLeave(room);
+        // Somebody who is no longer a member is no longer typing there either (Batch 1.8).
+        if (typing.stopUser(change.conversationId, userId)) {
+          broadcastTyping(change.conversationId, userId, false);
+        }
       }
     },
 
@@ -701,6 +824,8 @@ export function createRealtimeGateway(
             'message:new',
             posted.message as never,
           );
+          // A file with a caption ends the typing that preceded it, as a text message does.
+          clearTypingAfterSend(posted.conversationId, posted.senderId);
         } catch (error) {
           // The message is committed. A delivery that fails here costs a refresh, not a message.
           logger.warn('Could not deliver an uploaded file over the socket', {
@@ -765,11 +890,13 @@ export function createRealtimeGateway(
   return {
     io,
     presence,
+    typing,
     async close(): Promise<void> {
       // Only if it is still ours: a test that started a second gateway must not have its
       // registration removed by the first one shutting down.
       clearRealtimeNotifier(notifier);
       presence.dispose();
+      typing.dispose();
       // Disconnects every socket and stops accepting new ones. The HTTP server is closed by
       // server.ts, which owns it.
       await io.close();
