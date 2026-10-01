@@ -19,6 +19,13 @@ import {
 import { canReadClipboard, pasteIntoComposer } from '@/lib/chat/clipboard';
 import { COMPOSER_SPELLCHECK, shouldUseCustomComposerMenu } from '@/lib/chat/composer-menu';
 import {
+  createDraftAutosave,
+  holdDraftForSend,
+  openDraft,
+  saveDraft,
+  type DraftAutosave,
+} from '@/lib/chat/drafts';
+import {
   applyMention,
   filterMentionCandidates,
   findMentionTrigger,
@@ -34,6 +41,11 @@ import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
 
 interface MessageComposerProps {
+  /**
+   * The conversation this composer writes to. Keys its saved draft (Batch 1.9) — the stable id,
+   * never the title, which changes when a group is renamed.
+   */
+  conversationId: string;
   conversationTitle: string;
   onSend: (body: string, mentions: MentionPayload[]) => void;
   /** Uploads a file, with whatever was typed alongside it as a caption. */
@@ -80,6 +92,7 @@ interface MessageComposerProps {
 const COUNTER_VISIBLE_FROM = MAX_MESSAGE_LENGTH - 200;
 
 export function MessageComposer({
+  conversationId,
   conversationTitle,
   onSend,
   onSendFile,
@@ -95,7 +108,16 @@ export function MessageComposer({
   mentionMembers,
   onTypingChange,
 }: MessageComposerProps) {
-  const [body, setBody] = useState('');
+  /*
+   * The saved draft for this conversation (Batch 1.9), read ONCE as the composer opens.
+   *
+   * The parent remounts this component per conversation, so "opened" is exactly "switched to this
+   * conversation" — and a lazy initial state is the whole of restoring. Nothing is announced: the
+   * typing signal is only ever fed from the employee's own input below, so reopening a draft does
+   * not tell anybody that its author is typing.
+   */
+  const [restoredDraft] = useState(() => openDraft(currentUserId, conversationId, mentionMembers));
+  const [body, setBody] = useState(restoredDraft?.text ?? '');
   /*
    * The chosen file, held here until the user presses Send.
    *
@@ -130,13 +152,13 @@ export function MessageComposer({
    * only the list of who was picked, which is what separates a real mention from somebody typing
    * "@" in an email address. It is a draft-scoped fact, so it is cleared whenever the draft is.
    */
-  const [confirmed, setConfirmed] = useState<ConfirmedMention[]>([]);
+  const [confirmed, setConfirmed] = useState<ConfirmedMention[]>(restoredDraft?.mentions ?? []);
   /** The `@…` the caret is inside, or null. Recomputed from the field; never remembered. */
   const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
   /** Which suggestion Enter would choose. Shared by the arrow keys and the mouse. */
   const [mentionIndex, setMentionIndex] = useState(0);
-  /** Where the caret belongs once a pasted value has been rendered. */
-  const pendingCursor = useRef<number | null>(null);
+  /** Where the caret belongs once a pasted value has been rendered — or a restored draft. */
+  const pendingCursor = useRef<number | null>(restoredDraft ? restoredDraft.text.length : null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -194,6 +216,39 @@ export function MessageComposer({
   }, []);
 
   /*
+   * Saving the draft (Batch 1.9): one debounced writer per composer, flushed when the composer
+   * closes — switching conversation — and when the page is hidden or unloaded, which is the
+   * desktop client going to the tray or being closed. Nothing is written while the text is only
+   * being shown (restored, cleared by a send, swapped for an edit); only `noteDraft` schedules a
+   * write, and only the employee's own input calls it.
+   */
+  const draftAutosaveRef = useRef<DraftAutosave | null>(null);
+  useEffect(() => {
+    const autosave = createDraftAutosave((draft) => saveDraft(currentUserId, conversationId, draft));
+    draftAutosaveRef.current = autosave;
+
+    const flush = () => autosave.flush();
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') autosave.flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+      autosave.flush();
+      draftAutosaveRef.current = null;
+    };
+  }, [currentUserId, conversationId]);
+
+  /** The user changed the draft. An edit in progress is the old message's text, not a draft. */
+  const noteDraft = useCallback((text: string, mentions: ConfirmedMention[]) => {
+    if (editTargetRef.current !== null) return;
+    draftAutosaveRef.current?.input({ text, mentions });
+  }, []);
+
+  /*
    * Entering and leaving edit mode.
    *
    * Keyed on the message id alone, so it fires exactly twice per edit — once on entry, once on
@@ -226,6 +281,8 @@ export function MessageComposer({
       confirmedBeforeEdit.current = confirmedRef.current;
       // The draft is set aside, and so is any "is typing…" it had started.
       typingSignalRef.current?.stop();
+      // Saved as it stands, so the edit's text can never be mistaken for it (Batch 1.9).
+      draftAutosaveRef.current?.flush();
     }
 
     const target = editTargetRef.current;
@@ -321,8 +378,9 @@ export function MessageComposer({
       setBody(outcome.value);
       pendingCursor.current = outcome.cursor;
       noteTyping(outcome.value);
+      noteDraft(outcome.value, confirmedRef.current);
     },
-    [noteTyping],
+    [noteDraft, noteTyping],
   );
 
   /**
@@ -389,20 +447,22 @@ export function MessageComposer({
         candidate,
       );
 
+      const current = confirmedRef.current;
+      const nextConfirmed = current.some(
+        (item) => item.kind === result.confirmed.kind && item.userId === result.confirmed.userId,
+      )
+        ? current
+        : [...current, result.confirmed];
+
       setBody(result.value);
       pendingCursor.current = result.cursor;
       noteTyping(result.value);
-      setConfirmed((current) =>
-        current.some(
-          (item) => item.kind === result.confirmed.kind && item.userId === result.confirmed.userId,
-        )
-          ? current
-          : [...current, result.confirmed],
-      );
+      noteDraft(result.value, nextConfirmed);
+      setConfirmed(nextConfirmed);
       setMentionTrigger(null);
       setMentionIndex(0);
     },
-    [mentionTrigger, noteTyping],
+    [mentionTrigger, noteDraft, noteTyping],
   );
 
   const trimmed = body.trim();
@@ -479,6 +539,14 @@ export function MessageComposer({
 
     // Sending ends the typing, before the message leaves (Batch 1.8).
     typingSignalRef.current?.stop();
+
+    /*
+     * The draft is HELD, not deleted (Batch 1.9): stored as exactly what is being sent, and
+     * removed by the session only once the server accepts it. A pending debounced write is
+     * dropped first — the held copy supersedes it.
+     */
+    draftAutosaveRef.current?.cancel();
+    holdDraftForSend(currentUserId, conversationId, { text: trimmed, mentions: confirmed });
 
     if (file) {
       // A caption can mention people too; it is the same body, sent the same way.
@@ -726,6 +794,7 @@ export function MessageComposer({
               setBody(event.target.value);
               syncMentionTrigger(event.target);
               noteTyping(event.target.value);
+              noteDraft(event.target.value, confirmedRef.current);
             }}
             /*
              * `onSelect` fires whenever the caret moves — arrow keys, a click, a drag — so moving
@@ -756,7 +825,10 @@ export function MessageComposer({
                   ? 'Add a message with the file (optional)'
                   : `Message ${conversationTitle}`
             }
-            /* The parent keys this component by conversation, so opening one focuses a fresh field. */
+            /*
+             * The parent keys this component by conversation, so opening one focuses a fresh field
+             * — holding that conversation's saved draft, if it has one, with the caret at its end.
+             */
             autoFocus
             aria-describedby="composer-hint"
             aria-invalid={tooLong || undefined}

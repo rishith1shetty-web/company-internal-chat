@@ -53,6 +53,7 @@ import {
   initialChatState,
   type ChatState,
 } from '@/lib/chat/state';
+import { pruneDrafts, releaseDeliveredDraft, returnUndeliveredDraft } from '@/lib/chat/drafts';
 import { newClientMessageId } from '@/lib/chat/ids';
 import { createChatSocket, type ChatSocketClient } from '@/lib/chat/socket';
 import type { MentionPayload } from '@/lib/chat/mentions';
@@ -287,6 +288,13 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     try {
       const data = await fetchConversations();
       knownConversationsRef.current = new Set(data.conversations.map((item) => item.id));
+      /*
+       * Drafts for conversations this user can no longer open — left, removed — go (Batch 1.9).
+       * Only here, with the server's complete list in hand: an empty list from before anything
+       * loaded must never be read as "you have no conversations".
+       */
+      const owner = stateRef.current.currentUser?.id;
+      if (owner) pruneDrafts(owner, knownConversationsRef.current);
       dispatch({
         type: 'conversations-loaded',
         conversations: data.conversations,
@@ -817,6 +825,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
    * `clientMessageId` is minted here and reused verbatim on retry. It is the only identifier the
    * browser is allowed to invent, and only because it names nothing — it is an idempotency key,
    * not an identity.
+   *
+   * Resolves true when the server accepted the message — the moment a held draft may go.
    */
   const deliver = useCallback(
     async (
@@ -825,7 +835,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       clientMessageId: string,
       replyToId?: string | undefined,
       mentions?: MentionPayload[] | undefined,
-    ) => {
+    ): Promise<boolean> => {
       const socket = socketRef.current;
 
       if (!socket) {
@@ -835,7 +845,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           clientMessageId,
           message: 'You are not connected. The message was not sent.',
         });
-        return;
+        return false;
       }
 
       const ack = await socket.sendMessage({
@@ -850,17 +860,30 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       if (ack.ok) {
         dispatch({ type: 'message-acknowledged', clientMessageId, message: ack.data });
         dispatch({ type: 'notice', message: null });
-      } else {
-        dispatch({
-          type: 'message-failed',
-          conversationId,
-          clientMessageId,
-          message: ack.error.message,
-        });
+        return true;
       }
+
+      dispatch({
+        type: 'message-failed',
+        conversationId,
+        clientMessageId,
+        message: ack.error.message,
+      });
+      return false;
     },
     [],
   );
+
+  /**
+   * The server accepted text the composer had held as a draft (Batch 1.9), so the draft goes.
+   *
+   * Nothing happens on failure: the failed bubble keeps the text and offers Retry, and the held
+   * draft is the copy that survives a reload.
+   */
+  const releaseDraft = useCallback((conversationId: string, text: string) => {
+    const owner = stateRef.current.currentUser?.id;
+    if (owner) releaseDeliveredDraft(owner, conversationId, text);
+  }, []);
 
   const sendMessage = useCallback(
     (body: string, mentions: MentionPayload[] = []) => {
@@ -906,9 +929,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         })),
       });
 
-      void deliver(conversationId, trimmed, clientMessageId, reply?.id, mentions);
+      void deliver(conversationId, trimmed, clientMessageId, reply?.id, mentions).then((ok) => {
+        if (ok) releaseDraft(conversationId, trimmed);
+      });
     },
-    [deliver, replyTarget],
+    [deliver, releaseDraft, replyTarget],
   );
 
   /**
@@ -958,10 +983,19 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           dispatch({ type: 'message-received', message });
           dispatch({ type: 'upload-finished', clientMessageId });
           dispatch({ type: 'notice', message: null });
+          if (caption) releaseDraft(conversationId, caption);
           void loadAttachments(conversationId);
         })
         .catch((error: unknown) => {
           uploadsRef.current.delete(clientMessageId);
+
+          /*
+           * A failed or cancelled upload offers no Retry, so its caption must not stay hidden as
+           * "in flight": the next time this conversation opens, it is back in the composer
+           * (Batch 1.9). The File itself cannot be — it has to be chosen again.
+           */
+          const owner = stateRef.current.currentUser?.id;
+          if (caption && owner) returnUndeliveredDraft(owner, conversationId, caption);
 
           // Cancelling is a decision, not a failure: the card simply goes.
           if (error instanceof ApiError && error.code === 'ABORTED') {
@@ -983,7 +1017,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           });
         });
     },
-    [handleFailure, loadAttachments],
+    [handleFailure, loadAttachments, releaseDraft],
   );
 
   const cancelUpload = useCallback((clientMessageId: string) => {
@@ -1018,9 +1052,13 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       // Same `clientMessageId` as the first attempt. If the original send did commit and only
       // the acknowledgement was lost, the server returns the stored row rather than writing a
       // second message.
-      void deliver(message.conversationId, message.body, message.clientMessageId);
+      const conversationId = message.conversationId;
+      const body = message.body;
+      void deliver(conversationId, body, message.clientMessageId).then((ok) => {
+        if (ok) releaseDraft(conversationId, body);
+      });
     },
-    [deliver],
+    [deliver, releaseDraft],
   );
 
   /** Pages further back in the open conversation. */

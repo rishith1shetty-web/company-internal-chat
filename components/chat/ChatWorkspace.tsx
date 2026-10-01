@@ -534,8 +534,12 @@ export function ChatWorkspace() {
               <TypingIndicator names={typingNames} />
 
               <MessageComposer
-                /* Remounting per conversation gives each one a fresh, empty composer. */
+                /*
+                 * Remounting per conversation gives each one its own composer — opened on that
+                 * conversation's saved draft, or empty (Batch 1.9).
+                 */
                 key={selectedConversation.id}
+                conversationId={selectedConversation.id}
                 conversationTitle={selectedTitle}
                 onSend={session.sendMessage}
                 onSendFile={session.sendFile}
