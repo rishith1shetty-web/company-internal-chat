@@ -321,7 +321,9 @@ describe('Batches 1.1 to 1.6 are not regressed', () => {
   });
 
   it('Ctrl+V is still untouched (Batch 1.2)', () => {
-    expect(code(COMPOSER)).not.toContain('onPaste={');
+    // The one paste handler (Batch 1.10, screenshots) returns before preventDefault for text.
+    expect(code(COMPOSER).match(/onPaste=\{/g) ?? []).toHaveLength(1);
+    expect(code(COMPOSER)).toContain('onPaste={pasteImage}');
     expect(composer).toContain('pasteIntoComposer');
   });
 

@@ -249,10 +249,12 @@ describe('normal composing, reply and edit are unaffected', () => {
 /* -------------------------------------------------------------------------------------------- */
 
 describe('Copy and Paste still work as Batch 1.2 left them', () => {
-  it('the composer still registers no paste handler, so Ctrl+V is untouched', () => {
+  it('the composer’s only paste handler is the screenshot one, so text Ctrl+V is untouched', () => {
     // `onPaste={` is the JSX handler. The menu's own prop is `onPasteSelected`, which is a
     // different thing and must not trip this — the same distinction clipboard-wiring.test.ts draws.
-    expect(code(COMPOSER)).not.toContain('onPaste={');
+    // That one handler (Batch 1.10) returns before preventDefault for anything but an image.
+    expect(code(COMPOSER).match(/onPaste=\{/g) ?? []).toHaveLength(1);
+    expect(code(COMPOSER)).toContain('onPaste={pasteImage}');
     expect(code(COMPOSER)).not.toContain("addEventListener('paste'");
   });
 

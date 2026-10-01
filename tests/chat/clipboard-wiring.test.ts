@@ -38,18 +38,34 @@ const MESSAGE_LIST = 'components/chat/MessageList.tsx';
 const CLIPBOARD = 'lib/chat/clipboard.ts';
 
 describe('native keyboard paste is left alone', () => {
-  it('the composer registers no paste handler at all', () => {
+  it('the composer’s one paste handler leaves every text paste to the browser', () => {
     const text = source(COMPOSER);
 
     /*
      * Ctrl+V is a trusted user action: the browser writes into the field and React sees an
      * ordinary change event. Nothing has to be done to support it — but it is easy to BREAK, by
      * adding an `onPaste` that preventDefaults in order to "handle pasting properly".
+     *
+     * Batch 1.10 adds exactly one handler, for screenshots. It must return BEFORE
+     * `preventDefault` whenever the paste is not an image-only paste, which is what keeps text
+     * Ctrl+V native. `imageFromClipboard` returning null for text is tested behaviourally in
+     * tests/chat/paste-image.test.ts.
      */
     // `onPaste={` is the JSX handler, not a mention in a comment. The composer's own menu prop
     // is deliberately called `onPasteSelected` so that this check stays unambiguous.
-    expect(text).not.toContain('onPaste={');
+    expect(text.match(/onPaste=\{/g) ?? []).toHaveLength(1);
+    expect(text).toContain('onPaste={pasteImage}');
     expect(text).not.toContain("addEventListener('paste'");
+
+    const handler = text.slice(
+      text.indexOf('const pasteImage = '),
+      text.indexOf('chooseFile(pastedImageFile(image));'),
+    );
+    expect(handler).toContain('const image = imageFromClipboard(event.clipboardData);');
+    expect(handler.indexOf('if (!image) return;')).toBeGreaterThan(-1);
+    expect(handler.indexOf('if (!image) return;')).toBeLessThan(
+      handler.indexOf('event.preventDefault()'),
+    );
   });
 
   it('the composer intercepts only the context menu, and only to replace it', () => {

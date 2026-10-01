@@ -1,7 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type {
+  ClipboardEvent as ReactClipboardEvent,
+  FormEvent,
+  KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+} from 'react';
 
 import { ComposerContextMenu } from '@/components/chat/ComposerContextMenu';
 import { MentionPicker } from '@/components/chat/MentionPicker';
@@ -36,6 +41,7 @@ import {
   type MentionTrigger,
 } from '@/lib/chat/mentions';
 import { formatFileSize } from '@/lib/chat/format';
+import { imageFromClipboard, pastedImageFile } from '@/lib/chat/paste-image';
 import { createTypingSignal, type TypingSignal } from '@/lib/chat/typing';
 import type { ChatMessage, UserSummary } from '@/lib/chat/types';
 import { MAX_MESSAGE_LENGTH } from '@/lib/chat/types';
@@ -514,6 +520,33 @@ export function MessageComposer({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  /**
+   * Ctrl+V with a screenshot on the clipboard (Batch 1.10).
+   *
+   * TEXT PASTE IS NEVER TOUCHED. `imageFromClipboard` answers null for anything that is not an
+   * image-only clipboard — text, text alongside a picture (Excel, Word), or nothing usable — and
+   * this returns BEFORE `preventDefault`, so the browser pastes exactly as it did before (Batch
+   * 1.2). Only an image paste is taken over, and only to do what the paperclip does: the image
+   * becomes the selected file, shown in the same card, with whatever is typed as its caption. Nothing
+   * is uploaded until Send.
+   *
+   * Not while editing: an edit changes a message's text and cannot add a file — the paperclip is
+   * disabled for the same reason — so the employee is told rather than left wondering.
+   */
+  const pasteImage = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const image = imageFromClipboard(event.clipboardData);
+    if (!image) return;
+
+    event.preventDefault();
+    if (editing) {
+      setPasteError('A screenshot cannot be added while editing a message.');
+      return;
+    }
+
+    setPasteError(null);
+    chooseFile(pastedImageFile(image));
+  };
+
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (!canSend) return;
@@ -804,6 +837,8 @@ export function MessageComposer({
              */
             onSelect={(event) => syncMentionTrigger(event.currentTarget)}
             onKeyDown={onKeyDown}
+            /* Image pastes only; text pastes return untouched (see `pasteImage`). */
+            onPaste={pasteImage}
             onContextMenu={openComposerMenu}
             /*
              * Spelling underlines, from the platform's own dictionary (Batch 1.5).
